@@ -1,0 +1,3202 @@
+USE [dba]
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatDateTime(@datetime DATETIME2, @model TINYINT = 2, @year_digits TINYINT = 2)
+RETURNS VARCHAR(50) AS
+BEGIN 
+	DECLARE @ret VARCHAR(50) = ''
+	IF @datetime IS NULL
+		RETURN ''
+	IF @year_digits IS NULL
+		SET @year_digits = 2
+
+	IF @model = 1
+	BEGIN 
+		DECLARE @sdt SMALLDATETIME
+		SET @sdt = CONVERT(SMALLDATETIME, @datetime)
+		SET @ret = CONVERT(VARCHAR(16), @sdt, 121)
+	END
+	IF @model = 2
+	BEGIN 
+		DECLARE @dt DATETIME2(0)
+		SET @dt = CONVERT(DATETIME2(0), @datetime)
+		SET @ret = CONVERT(VARCHAR(20), @dt, 121)
+	END
+	SET @ret = COALESCE(@ret, '')
+	IF LEN(@ret) > 10
+	BEGIN 
+		IF @year_digits != 4
+			SET @ret = SUBSTRING(@ret, 6 - @year_digits, 255)
+	END
+	RETURN @ret
+END
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatNum(@number FLOAT, @format VARCHAR(50) = NULL)
+RETURNS VARCHAR(50) AS
+BEGIN 
+/*
+	SELECT dbo.fn_FormatNum(12343434, NULL)
+*/
+	IF @number IS NULL
+		RETURN ''
+	DECLARE @ret VARCHAR(50)
+	IF @format IS NULL
+		SET @format = '0.#'
+	SET @ret = FORMAT(@number, @format)
+	IF PATINDEX('%[1-9]%', @ret) = 0
+			SET @ret = ''
+	RETURN COALESCE(@ret, '')
+END
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatSeconds(@seconds BIGINT, @format VARCHAR(50) = NULL, @model TINYINT = 1)
+RETURNS VARCHAR(50) AS
+BEGIN 
+/*
+	
+	SELECT dbo.fn_FormatSeconds(12345667, null, 1)
+	SELECT dbo.fn_FormatSeconds(12345667, null, 2)
+
+	SELECT dbo.fn_FormatSeconds(12999, default)
+
+*/
+	DECLARE @ret VARCHAR(50) = ''
+	DECLARE @days INT, @hours INT, @minutes INT, @sec INT
+	DECLARE @elim_threshold FLOAT = 0.02
+	DECLARE @sec_dec_threshold INT = 90
+
+
+	
+	IF @seconds IS NULL OR @seconds < 1 
+		RETURN ''
+	IF @format IS NULL
+	BEGIN
+		IF @seconds > 60 * 60
+			SET @format = 'hh:mm:ss'
+		ELSE 
+			SET @format = 'mm:ss'
+	END
+	IF @model = 1
+		SELECT @ret = 
+			CASE @format 
+				WHEN 'mm:ss' THEN RIGHT(CONVERT(CHAR(8),DATEADD(second, @seconds,0),108),5)
+				WHEN 'hh:mm:ss' THEN CONVERT(CHAR(8),DATEADD(second, @seconds,0),108)
+			END
+	IF @model = 2
+	BEGIN 
+		SELECT @days = @seconds / 86400,
+			@hours = (@seconds % 86400) / 3600,
+			@minutes = ((@seconds % 86400) % 3600) / 60,
+			@sec = ((@seconds % 86400) % 3600) % 60
+
+		IF @days > 0 
+		BEGIN 
+			SELECT @ret = CONVERT(VARCHAR, @days) + 'd ', @minutes = 0, @sec = 0
+			IF @hours > 0 AND  @hours / (@days * 24.) < @elim_threshold
+				SET @hours = 0
+		END
+		IF @hours > 0
+		BEGIN 
+			SELECT @ret += CONVERT(VARCHAR, @hours) + 'h ', @sec = 0
+			IF @minutes > 0 AND  @minutes / (@hours * 60.) < @elim_threshold
+				SET @minutes = 0
+		END
+		IF @minutes > 0
+		BEGIN 
+			SELECT @ret += CONVERT(VARCHAR, @minutes) + 'm '
+			IF @sec > 0 AND  @sec / (@minutes * 60.) < @elim_threshold
+				SET @sec = 0
+		END
+		IF @sec > 0
+			SET @ret += CONVERT(VARCHAR, @sec) + 's'
+	END
+
+	IF @model = 3
+	BEGIN 
+		IF @seconds <= @sec_dec_threshold
+		BEGIN 
+			SET @ret = FORMAT(CONVERT(DECIMAL(20, 1), @seconds / 60.), 'N1')
+			SET @ret = FORMAT(@seconds, 'N0') + ' sec'
+		END
+		ELSE 
+			SET @ret = FORMAT(@seconds / 60, 'N0') + ' min'
+/*
+		IF @seconds < 60 
+			SET @ret = FORMAT(CONVERT(DECIMAL(10, 1), @seconds / 60.), 'N1')
+		ELSE 
+		BEGIN 
+			SELECT @minutes = @seconds / 60
+			SELECT @ret = CONVERT(VARCHAR, @minutes)
+		END
+*/
+	END
+
+	IF @model = 4
+	BEGIN 
+		SELECT @minutes = @seconds / 60,
+			@sec = @seconds % 60
+
+		SELECT @ret = CONVERT(VARCHAR, @minutes) + ':' + CONVERT(VARCHAR, @sec)
+	END
+
+	RETURN COALESCE(@ret, '')
+END
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatMetrics_Pages(@pages FLOAT, @format VARCHAR(50) = NULL, @model TINYINT = null)
+RETURNS VARCHAR(50) AS
+BEGIN 
+/*
+	
+	SELECT dbo.fn_FormatPages(12345667, null, 1)
+	SELECT dbo.fn_FormatSeconds(12345667, null, 2)
+
+	SELECT dbo.fn_FormatSeconds(12999, default)
+
+*/
+	IF ISNULL(@pages, 0) = 0
+		RETURN ''
+
+	IF @format IS NULL
+		SET @format = '0.#'
+	DECLARE @ret VARCHAR(50) = ''
+	DECLARE @tb FLOAT, @gb FLOAT, @mb FLOAT, @kb FLOAT, @b FLOAT, @measure VARCHAR(50) = '', @value FLOAT
+
+	SELECT @mb = @pages / 128., @kb = (@pages / 128.) * 1024., @b = (@pages / 128.) * 1024. * 1024., @gb = (@pages / 128.) / 1024., @tb = (@pages / 128.) / 1024. / 1024.
+
+	IF @tb > 0 AND @tb >= 1
+		SELECT @value = @tb, @measure = 'T'
+	ELSE IF @gb > 0 AND @gb >= 1
+		SELECT @value = @gb, @measure = 'G'
+	ELSE IF @mb > 0 AND @mb >= 1
+		SELECT @value = @mb, @measure = 'M'
+	ELSE IF @kb > 0 AND @kb >= 1
+		SELECT @value = @kb, @measure = 'K'
+	ELSE IF @b > 0
+		SELECT @value = @b, @measure = 'B'
+	ELSE 
+		RETURN ''
+
+	SET @ret = FORMAT(@value, @format) + ' ' + @measure
+
+	RETURN COALESCE(@ret, '')
+END
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatMetrics_CPUTime(@cpu_time_ms FLOAT, @format VARCHAR(50) = NULL, @model TINYINT = 1)
+RETURNS NVARCHAR(50) AS
+BEGIN 
+/*
+	
+	SELECT dbo.fn_FormatMetrics_CPUTime(12345667, null, null)
+	SELECT dbo.fn_FormatMetrics_CPUTime(0.1, null, null)
+
+*/
+	IF ISNULL(@cpu_time_ms, 0) = 0
+		RETURN ''
+
+	IF @format IS NULL
+		SET @format = '0.#'
+	DECLARE @ret NVARCHAR(50) = ''
+	DECLARE @mo FLOAT, @d FLOAT, @h FLOAT, @m FLOAT, @s FLOAT, @ms FLOAT, @microsec FLOAT, @measure VARCHAR(50) = '', @value FLOAT
+
+	SELECT @mo = @cpu_time_ms / 1000. / 60. / 60. / 24. / 31., 
+		@d = @cpu_time_ms / 1000. / 60. / 60. / 24., 
+		@h = (@cpu_time_ms / 1000.) / 60. / 60., 
+		@m = (@cpu_time_ms / 1000.) / 60., @s = @cpu_time_ms / 1000., 
+		@ms = @cpu_time_ms,
+		@microsec = @cpu_time_ms * 1000.
+	
+
+	IF @mo > 0 AND @mo >= 1
+		SELECT @value = @mo, @measure = 'mon'
+
+	IF @d > 0 AND @d >= 1 
+	BEGIN 
+		SET @value = @d
+		IF @d < 2
+			SET @measure = 'day'
+		ELSE 
+			SET @measure = 'days'
+	END
+	ELSE IF @h > 0 AND @h >= 1
+		SELECT @value = @h, @measure = 'hrs'
+	ELSE IF @m > 0 AND @m >= 1
+		SELECT @value = @m, @measure = 'min'
+	ELSE IF @s > 0 AND @s >= 1
+		SELECT @value = @s, @measure = 'sec'
+	ELSE IF @ms > 0 AND @ms >= 1
+		SELECT @value = @ms, @measure = 'ms'
+	ELSE IF @microsec > 0
+			SELECT @value = @microsec, @measure = N'μs'
+	ELSE 
+		RETURN ''
+
+	SET @ret = FORMAT(@value, @format) + ' ' + @measure
+
+	RETURN COALESCE(@ret, '')
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[dc_active_sessions_collector] @show_table_results BIT = 0, @skip_waitfor_sessions BIT = 1, @keep_history BIT = 1, @wait_time_sec INT = 60, @blocking_chains BIT = 1
+	,@skip_wait_resource_translation BIT = 0
+	,@skip_dbcc_page_on_tempdb BIT = 1
+AS BEGIN 
+/*
+	Active sessions collector 
+	
+	V 1 - May 2024. - Dusan Krstic 
+
+	EXEC dbo.dc_active_sessions_collector @show_table_results = 1, @blocking_chains = 0, @wait_time_sec = NULL
+	
+*/
+
+--SELECT * FROM sys.dm_io_pending_io_requests
+-- TODO:
+/*
+
+	Skip DBCC PAGE on OBJECT: 2:-1272009229:5 (tempdb, object_id < 0) to reduce possibility of session_collector blocking. Those are local temp objects (tables) anyway.
+	
+*/
+	
+	SET CONTEXT_INFO 0xDBADC005
+
+	-- Timestamp
+	DECLARE @timestamp DATETIME2(0) = GETDATE()
+
+	-- Declare some variables
+	DECLARE @error_number INT, @error_message VARCHAR(4000)
+	DECLARE @version TINYINT, @product_version VARCHAR(50)
+	SELECT @product_version = CONVERT(VARCHAR, SERVERPROPERTY('ProductVersion'))
+	SELECT @version = REPLACE(LEFT(@product_version, 2), '.', '')
+
+	DECLARE @prikaz_transakcija BIT = 1,  -- Indikator da li se prikazuju transakcije
+			@prikaz_aktivnih_waits_lokova BIT = 1,  -- Indikator da li se prikazuju aktivni wait lock-s
+			@prikaz_sql_text_xml BIT = 0, 
+			@jobnames_conversion BIT = 1
+
+
+	DECLARE @job_pattern NVARCHAR(255) = 'SQLAgent - TSQL JobStep (Job ', 
+			@step_pattern NVARCHAR(50) = N' : Step'
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET XACT_ABORT ON
+	SET NOCOUNT ON
+
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions_blocking_chains
+	TRUNCATE TABLE dbo.dc_rpt_active_transactions
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions_wait_resources
+
+	DECLARE @step INT = 1
+
+	-- Replace program names patterns
+	DECLARE @pr TABLE (program_name_old NVARCHAR(512), program_name_new VARCHAR(512))
+	INSERT INTO @pr
+		--SELECT 'Microsoft® Windows® Operating System' UNION ALL
+		SELECT 'Microsoft SQL Server Management Studio', 'Management Studio'
+
+	DECLARE @sessions TABLE (
+		session_id SMALLINT PRIMARY KEY, database_name VARCHAR(255), program_name VARCHAR(512), host_name VARCHAR(50), original_login_name VARCHAR(50)
+		,last_request_start_time DATETIME2, last_request_end_time DATETIME2, status VARCHAR(50)
+		,open_transaction_count SMALLINT, transaction_isolation_level TINYINT
+	)
+
+	INSERT INTO @sessions
+	SELECT session_id, NULL /*DB_NAME(s.database_id)*/, program_name, host_name, original_login_name, last_request_start_time, last_request_end_time
+		,status, NULL open_transaction_count, transaction_isolation_level
+	FROM sys.dm_exec_sessions s WITH (READPAST)
+	WHERE s.is_user_process = 1 
+		AND s.session_id != @@SPID --AND NOT EXISTS(SELECT TOP 1 1 FROM @np np WHERE s.program_name LIKE np.program_name)
+
+
+	DECLARE @reqs TABLE (
+		session_id INT, session_database_name VARCHAR(128), request_id SMALLINT, start_time DATETIME, total_elapsed_time BIGINT, blocking_session_id INT, status VARCHAR(50), cpu_time BIGINT, logical_reads BIGINT, 
+		reads BIGINT, writes BIGINT, row_count BIGINT, wait_type VARCHAR(80), wait_time BIGINT, command VARCHAR(80), wait_resource VARCHAR(256), statement_start_offset INT, statement_end_offset INT, last_wait_type VARCHAR(80),
+		sql_handle VARBINARY(64), transaction_isolation_level TINYINT, granted_query_memory INT, database_id INT, plan_handle VARBINARY(64), query_hash VARBINARY(16)
+		,UNIQUE (session_id, request_id)
+	)
+	INSERT INTO @reqs
+	SELECT s.session_id, s.database_name session_database_name, request_id, start_time, total_elapsed_time, blocking_session_id, r.status, cpu_time, logical_reads, reads, writes, row_count, wait_type, wait_time, command, wait_resource, 
+			statement_start_offset, statement_end_offset, last_wait_type, sql_handle, r.transaction_isolation_level, granted_query_memory, database_id,
+			plan_handle, query_hash
+	FROM sys.dm_exec_requests r WITH (READPAST)
+		INNER JOIN @sessions s ON s.session_id = r.session_id
+
+-- Update blocking_session_id from sys.sysprocesses
+	UPDATE r
+	SET blocking_session_id = COALESCE(x.blocked, 0)
+		,wait_type = COALESCE(x.lastwaittype, wait_type)
+		,wait_time = COALESCE(x.waittime, wait_time)
+		,wait_resource = COALESCE(x.waitresource, wait_resource)
+	FROM @reqs r
+		CROSS APPLY (SELECT blocked, waittime, lastwaittype, waitresource FROM sys.sysprocesses p WHERE p.spid = r.session_id AND blocked != 0 AND blocked != p.spid) x
+	WHERE r.blocking_session_id = 0 
+
+	
+	DECLARE @blockers TABLE (session_id INT PRIMARY KEY)
+	INSERT INTO @blockers 
+	SELECT DISTINCT blocking_session_id 
+	FROM @reqs
+	WHERE blocking_session_id > 0
+	
+	IF NOT EXISTS(SELECT * FROM @reqs WHERE blocking_session_id > 0) AND @blocking_chains = 1 -- No blocking chains detected
+	BEGIN 
+		RAISERROR(N'Active sessions collector. No blocking chains detected', 10, 10) WITH NOWAIT
+/*		DELETE dbo.dc_log_run_active_sessions_collector WHERE [timestamp] = @timestamp -- TROUBLESHOOTING LOG */
+		RETURN 
+	END 
+	
+	-- Check wait_time_ms threshold
+	IF @wait_time_sec IS NOT NULL AND NOT EXISTS(SELECT * FROM @reqs WHERE blocking_session_id > 0 AND wait_time >= (@wait_time_sec * 1000)) AND @blocking_chains = 1
+	BEGIN 
+		RAISERROR(N'Active sessions collector. Some blocking chains were detected but they do not exceed wait time threshold of %d seconds', 10, 10, @wait_time_sec) WITH NOWAIT
+/*		DELETE dbo.dc_log_run_active_sessions_collector WHERE [timestamp] = @timestamp -- TROUBLESHOOTING LOG */
+		RETURN 
+	END 
+
+	DECLARE @max_wait_time INT 
+	SELECT @max_wait_time = MAX(wait_time)
+	FROM @reqs
+	WHERE blocking_session_id > 0
+
+	RAISERROR(N'Active sessions collector. Blocking chains detected. Max wait time (ms): %d.', 10, 10, @max_wait_time) WITH NOWAIT
+
+	CREATE TABLE #sdb (session_id INT, database_id INT, open_transaction_count INT)
+
+	-- Update session databases for SQL Server version < 2012
+	IF @version < 11
+	BEGIN 
+		UPDATE s 
+		SET database_name = DB_NAME(dbid)
+			,open_transaction_count = p.open_tran
+		FROM @sessions s
+			INNER JOIN sys.sysprocesses p ON s.session_id = p.spid
+		WHERE database_name IS NULL
+	END
+	ELSE
+	BEGIN 
+		INSERT INTO #sdb (session_id)
+		SELECT DISTINCT session_id 
+		FROM @sessions
+
+		EXEC('UPDATE sd SET database_id = s.database_id, open_transaction_count = s.open_transaction_count 
+		FROM #sdb sd 
+			INNER JOIN sys.dm_exec_sessions s WITH (READPAST) ON sd.session_id = s.session_id')
+		UPDATE s 
+		SET database_name = DB_NAME(sd.database_id)
+			,open_transaction_count = sd.open_transaction_count
+		FROM @sessions s
+			INNER JOIN #sdb sd ON s.session_id = sd.session_id
+		WHERE s.database_name IS NULL
+	END
+	
+	/*SET @step = 3; INSERT INTO dbo.dc_log_run_active_sessions_collector ([timestamp], step) VALUES (@timestamp, @step) -- TROUBLESHOOTING LOG */
+	
+	DECLARE @jobs TABLE (job_signature VARCHAR(255) PRIMARY KEY, job_name VARCHAR(128))
+--/*
+	DECLARE @jobs_running TABLE (session_id SMALLINT, program_name VARCHAR(128))
+
+	INSERT INTO @jobs_running
+	SELECT session_id, program_name		
+	FROM @sessions 
+	WHERE program_name LIKE @job_pattern + '%'
+
+	IF EXISTS(
+		SELECT *
+		FROM @jobs_running
+	)
+		INSERT INTO @jobs
+		SELECT job_signature = CONVERT(CHAR(12), RIGHT(RTRIM(CONVERT(VARCHAR(128), job_id)), 12)), 'AGENT JOB: ' + CONVERT(VARCHAR(128), name) job_name 
+		FROM msdb.dbo.sysjobs j 
+
+	DECLARE @jobsteps TABLE (job_signature VARCHAR(255), step_id SMALLINT, step_name VARCHAR(128), UNIQUE (job_signature, step_id))	
+
+/*
+	INSERT INTO @jobsteps
+	SELECT job_signature, step_id, step_name
+	FROM msdb.dbo.sysjobsteps s /*WITH (READPAST)*/
+		INNER JOIN @jobs j ON RIGHT(RTRIM(CONVERT(VARCHAR(128), job_id)), 12) = job_signature
+*/
+	
+	DECLARE @jsteps_tmp TABLE (session_id SMALLINT, job_signature CHAR(12), step_id SMALLINT)
+	
+	INSERT INTO @jsteps_tmp
+	SELECT jr.session_id, j.job_signature, 
+			CONVERT(SMALLINT, LTRIM(RTRIM(REPLACE(REPLACE(SUBSTRING(program_name, CHARINDEX(@step_pattern, program_name), LEN(program_name)), ')', ''), @step_pattern, ''))))
+	FROM @jobs_running jr 
+		INNER JOIN @jobs j ON jr.program_name LIKE '%' + j.job_signature + '%'
+
+	UPDATE s
+		SET program_name = j.job_name + ' (Step ' + CONVERT(VARCHAR, js.step_id) + ')'
+	FROM @sessions s
+		INNER JOIN @jsteps_tmp js ON s.session_id = js.session_id
+		INNER JOIN @jobs j ON js.job_signature = j.job_signature
+		--INNER JOIN @jobsteps jst ON jst.job_signature = j.job_signature AND js.step_id = jst.step_id
+
+	-- Update program names
+	UPDATE s
+	SET program_name = REPLACE(program_name, p.program_name_old, p.program_name_new)
+	FROM @sessions s 
+		INNER JOIN @pr p ON s.program_name LIKE p.program_name_old + '%'
+
+	DECLARE @tempdb_alloc TABLE (session_id INT, tempdb_user_mb INT, tempdb_internal_mb INT)
+	INSERT INTO @tempdb_alloc
+	SELECT  tsu.session_id, 
+			CONVERT(DECIMAL(10, 1), SUM( (((tsu.user_objects_alloc_page_count - user_objects_dealloc_page_count) * 8) / 1024.)) ) AS tempdb_user_mb,
+			CONVERT(DECIMAL(10, 1), SUM( (((tsu.internal_objects_alloc_page_count - internal_objects_dealloc_page_count) * 8) / 1024.)) ) AS tempdb_internal_mb
+	FROM sys.dm_db_task_space_usage tsu WITH (READPAST)
+		INNER JOIN @sessions s ON tsu.session_id = s.session_id
+	GROUP BY tsu.session_id
+
+	DECLARE @sql_text TABLE (session_id SMALLINT, object_id INT, database_id SMALLINT, statement_sql_text VARCHAR(MAX))
+
+	;WITH rq AS (
+		SELECT r.session_id, 
+				q.objectid object_id,
+				q.dbid database_id,
+				r.statement_start_offset, r.statement_end_offset, dbid, objectid, text
+		FROM @reqs r 
+			CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) q
+			LEFT JOIN sys.databases d ON d.database_id = q.dbid
+		)
+	INSERT INTO @sql_text 
+	SELECT session_id, 	
+			object_id, 
+			database_id,
+			statement_sql_text = 
+		  (SELECT CASE WHEN statement_start_offset = 0 AND statement_end_offset = 0 THEN NULL ELSE SUBSTRING(text, statement_start_offset / 2+1 , 
+		  ( (CASE WHEN statement_end_offset = -1 THEN ((CASE WHEN LEN(CONVERT(NVARCHAR(max), text)) < 0 THEN 0 ELSE LEN(CONVERT(NVARCHAR(max), text)) END) * 2) ELSE statement_end_offset END) - statement_start_offset) / 2+1) END
+			)
+	FROM rq
+
+
+-- Fetching proc/fn/triggers types	
+	SELECT DISTINCT database_id, DB_NAME(database_id) database_name
+	INTO #dbs 
+	FROM @sql_text
+	
+	SELECT DISTINCT database_id, object_id, CONVERT(VARCHAR(50), NULL) object_type, CONVERT(VARCHAR(255), NULL) object_name
+	INTO #otypes
+	FROM @sql_text
+
+	IF @@ROWCOUNT > 0
+	BEGIN 
+
+		DECLARE @otypes_cmd VARCHAR(MAX) = ''
+		SELECT @otypes_cmd += '
+			USE ' + QUOTENAME(database_name) + ';
+			UPDATE t 
+			SET object_name = s.name + ''.'' + o.name
+				,object_type = type_desc 
+			FROM #otypes t
+				INNER JOIN sys.objects o ON t.object_id = o.object_id
+				INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
+			WHERE t.database_id = ' + CONVERT(VARCHAR, database_id) + ';
+		'
+		FROM #dbs d
+		WHERE database_name IS NOT NULL
+
+		BEGIN TRY
+			EXEC(@otypes_cmd)
+		END TRY
+		BEGIN CATCH
+			SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+		END CATCH
+		IF @error_number IS NOT NULL
+			RAISERROR(N'Error pulling object type information. ErrNumber: %d. ErrMessage: %s. Cmd: %s', 10, 10, @error_number, @error_message, @otypes_cmd) WITH NOWAIT
+
+	END
+
+
+	DECLARE @requests TABLE (
+		SSID smallint,	RQID int, [Object Database] nvarchar(128), [Object] varchar(128), [Object Type] VARCHAR(50), Application varchar(512),	Host varchar(50),	Login varchar(50),	[Start Time] datetime,
+		Status varchar(10), [Blocking SSID] smallint,	[Blocking SSID-s Count] int, [TempDB User (MB)] INT, [TempDB Internal (MB)] INT, [Duration (ms)] int, [CPU (ms)] int,
+		[Logical Reads] bigint,	[Physical Reads] bigint, [Writes] bigint, [Rows] bigint, [Granted Memory (MB)] decimal(10, 1), [Requested Memory (MB)] decimal(10, 1),
+		[Used Memory (MB)] decimal(10, 1),	[Wait Type] nvarchar(60), [Wait Time (ms)] int, [Wait Resource] nvarchar(256), [Query Cost] decimal(10, 1),	Command nvarchar(32),
+		[SQL Statement] varchar(max), [Session Database] varchar(255), [Request Database] nvarchar(128), [Last Wait Type] nvarchar(60),	[Open Trans Count] smallint,
+		[Tran Isolation Level] varchar(30),	[TLOG Used (MB)] decimal(10, 2), [TLOG Reserved (MB)] decimal(10, 2), [TLOG Rows] bigint, [Wait Category] nvarchar(32), [Query Hash] VARBINARY(16)
+	)
+
+	INSERT INTO @requests
+	SELECT  s.session_id SSID,
+			r.request_id RQID,
+			--object_id, 
+			DB_NAME(t.database_id) [Object Database],
+			ot.object_name [Object],
+			ot.object_type,
+			s.program_name [Application],
+			s.host_name [Host],
+			s.original_login_name [Login],
+			ISNULL(r.start_time, s.last_request_start_time) [Start Time],
+			--proteklo_vreme = CONVERT(VARCHAR, (r.total_elapsed_time / 1000 / 86400)) + '.' + CONVERT(varchar, DATEADD(ss, r.total_elapsed_time / 1000, 0), 108),  
+			[Status] = CASE COALESCE(r.status, s.status) WHEN 'background' THEN 'Background' WHEN 'Running' THEN 'Running' WHEN 'Runnable' THEN 'Runnable' WHEN 'Sleeping' THEN 'Sleeping' WHEN 'Suspended' THEN 'Suspended' END,
+			r.blocking_session_id [Blocking SSID], 
+			[Blocking SSID-s Count] = (SELECT COUNT(*) FROM @reqs WHERE blocking_session_id = COALESCE(r.session_id, s.session_id)),
+			tempdb_user_mb [TempDB User (MB)], tempdb_internal_mb [TempDB Internal (MB)], 
+			r.total_elapsed_time [Duration (ms)],
+			r.cpu_time [CPU (ms)], 
+			r.logical_reads [Logical Reads], 
+			r.reads [Physical Reads], 
+			r.writes [Writes], 
+			r.row_count [Rows], 
+ 			CONVERT(DECIMAL(10, 1), r.granted_query_memory / 128.) [Granted Memory (MB)], 	
+			CONVERT(DECIMAL(10, 1), requested_memory_kb / 1024.) [Requested Memory (MB)], 
+			CONVERT(DECIMAL(10, 1), used_memory_kb / 1024.) [Used Memory (MB)],
+			r.wait_type [Wait Type], 
+			wait_time [Wait Time (ms)],
+			NULLIF(r.wait_resource, '') [Wait Resource],
+			CONVERT(DECIMAL(10, 1), query_cost) [Query Cost],  	
+			r.command [Command], 
+			t.statement_sql_text [SQL Statement],
+			COALESCE(s.database_name, session_database_name) [Session Database],
+			DB_NAME(r.database_id) [Request Database], 
+			r.last_wait_type [Last Wait Type], 
+			ISNULL(s.open_transaction_count, 0) [Open Trans Count], 
+			[Tran Isolation Level] = CASE COALESCE(r.transaction_isolation_level, s.transaction_isolation_level) WHEN 0 THEN 'Unspecified' WHEN 1 THEN 'Read Uncommitted' WHEN 2 THEN 'Read Committed' WHEN 3 THEN 'Repeatable' WHEN 4 THEN 'Serializable' WHEN 5 THEN 'Snapshot' END
+			,tlog_used_mb [TLOG Used (MB)], tlog_reserved_mb [TLOG Reserved (MB)], tlog_rows [TLOG Rows]
+			,[Wait Category] = 
+			CASE 
+				WHEN wait_type IS NULL THEN 'CPU Usage' --NULL
+				WHEN wait_type = N'SOS_SCHEDULER_YIELD' THEN N'CPU' 
+				WHEN wait_type = N'OLEDB' THEN N'OLEDB Provider' 
+				WHEN wait_type = N'DAC_INIT' THEN N'DAC' 
+				WHEN wait_type = N'THREADPOOL' THEN 'CPU - Unavailable Worker Threads'
+				WHEN wait_type LIKE N'LCK_%' OR wait_type = N'LOCK' THEN N'Lock' 
+				WHEN wait_type LIKE N'LATCH_%' THEN N'Latch' 
+				WHEN wait_type LIKE N'PAGELATCH_%' THEN N'Buffer Latch' 
+				WHEN wait_type LIKE N'PAGEIOLATCH_%' THEN N'Buffer IO' 
+				WHEN wait_type LIKE N'HADR_SYNC_COMMIT' THEN N'Always On - Secondary Synch' 
+				WHEN wait_type LIKE N'HADR_%' OR wait_type LIKE N'PWAIT_HADR_%' THEN N'Always On'
+				WHEN wait_type LIKE N'FFT_%' THEN N'FileTable'
+				WHEN wait_type LIKE N'RESOURCE_SEMAPHORE_%' OR wait_type LIKE N'RESOURCE_SEMAPHORE_QUERY_COMPILE' THEN N'Memory - Compilation'
+				WHEN wait_type IN (N'UTIL_PAGE_ALLOC', N'SOS_VIRTUALMEMORY_LOW', N'SOS_RESERVEDMEMBLOCKLIST', N'RESOURCE_SEMAPHORE', N'CMEMTHREAD', N'CMEMPARTITIONED', N'EE_PMOLOCK', N'MEMORY_ALLOCATION_EXT', N'RESERVED_MEMORY_ALLOCATION_EXT', N'MEMORY_GRANT_UPDATE') THEN N'Memory'
+				WHEN wait_type LIKE N'CLR%' OR wait_type LIKE N'SQLCLR%' THEN N'SQL CLR' 
+				WHEN wait_type LIKE N'DBMIRROR%' OR wait_type = N'MIRROR_SEND_MESSAGE' THEN N'Mirroring' 
+				WHEN wait_type LIKE N'XACT%' or wait_type LIKE N'DTC%' or wait_type LIKE N'TRAN_MARKLATCH_%' or wait_type LIKE N'MSQL_XACT_%' or wait_type = N'TRANSACTION_MUTEX' THEN N'Transaction' 
+				WHEN wait_type LIKE N'PREEMPTIVE_%' THEN N'External APIs or XPs' 
+				WHEN wait_type LIKE N'BROKER_%' AND wait_type <> N'BROKER_RECEIVE_WAITFOR' THEN N'Service Broker' 
+				WHEN wait_type IN (N'LOGMGR', N'LOGBUFFER', N'LOGMGR_RESERVE_APPEND', N'LOGMGR_FLUSH', N'LOGMGR_PMM_LOG', N'CHKPT', N'WRITELOG') THEN N'Tran Log IO' 
+				WHEN wait_type IN (N'ASYNC_NETWORK_IO', N'NET_WAITFOR_PACKET', N'PROXY_NETWORK_IO', N'EXTERNAL_SCRIPT_NETWORK_IO') THEN N'Network IO' 
+				WHEN wait_type IN (N'CXPACKET', N'EXCHANGE', N'CXCONSUMER', N'HTBUILD', N'HTDELETE', N'HTMEMO', N'HTREINIT', N'HTREPARTITION', N'CXROWSET_SYNC', N'EXECSYNC') THEN N'CPU - Parallelism'
+				WHEN wait_type IN (N'WAITFOR', N'WAIT_FOR_RESULTS', N'BROKER_RECEIVE_WAITFOR') THEN N'User Wait' 
+				WHEN wait_type IN (N'TRACEWRITE', N'SQLTRACE_LOCK', N'SQLTRACE_FILE_BUFFER', N'SQLTRACE_FILE_WRITE_IO_COMPLETION', N'SQLTRACE_FILE_READ_IO_COMPLETION', N'SQLTRACE_PENDING_BUFFER_WRITERS', N'SQLTRACE_SHUTDOWN', N'QUERY_TRACEOUT', N'TRACE_EVTNOTIF') THEN N'Tracing' 
+				WHEN wait_type LIKE N'FT_%' OR wait_type IN (N'FULLTEXT GATHERER', N'MSSEARCH', N'PWAIT_RESOURCE_SEMAPHORE_FT_PARALLEL_QUERY_SYNC') THEN N'Full Text Search' 
+				WHEN wait_type IN (N'ASYNC_DISKPOOL_LOCK', N'ASYNC_IO_COMPLETION', N'IO_COMPLETION', N'WRITE_COMPLETION', N'IO_QUEUE_LIMIT', /*N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',*/ N'IO_RETRY') THEN N'Other Disk IO' 
+				WHEN wait_type IN (N'BACKUPIO', N'BACKUPBUFFER', N'BACKUPTHREAD', 'PARALLEL_BACKUP_QUEUE') THEN 'Backup IO'
+				WHEN wait_type LIKE N'SE_REPL_%' or wait_type LIKE N'REPL_%'  or wait_type IN (N'REPLICA_WRITES', N'FCB_REPLICA_WRITE', N'FCB_REPLICA_READ', N'PWAIT_HADRSIM') THEN N'Replication' 
+				WHEN wait_type IN (N'LOG_RATE_GOVERNOR', N'POOL_LOG_RATE_GOVERNOR', N'HADR_THROTTLE_LOG_RATE_GOVERNOR', N'INSTANCE_LOG_RATE_GOVERNOR') THEN N'Log Rate Governor' 
+				WHEN wait_type = N'REPLICA_WRITE' THEN 'Snapshots'
+				WHEN wait_type = N'WAIT_XTP_OFFLINE_CKPT_LOG_IO' OR wait_type = N'WAIT_XTP_CKPT_CLOSE' THEN 'In-Memory OLTP Logging'
+				WHEN wait_type LIKE N'QDS%' THEN N'Query Store'
+				WHEN wait_type LIKE N'XTP%' OR wait_type LIKE N'WAIT_XTP%' THEN N'In-Memory OLTP'
+				WHEN wait_type LIKE N'PARALLEL_REDO%' THEN N'Parallel Redo'
+				WHEN wait_type LIKE N'XE_%' THEN N'XEvents'
+				WHEN wait_type LIKE N'CHECK_%' OR wait_type LIKE 'LOGPOOL_%' THEN N'Internal'
+				WHEN wait_type LIKE N'DEADLOCK_%' THEN N'Deadlock Monitor'
+				WHEN wait_type LIKE N'COLUMNSTORE%' THEN N'Columnstore' 
+				WHEN wait_type = 'CPU Usage' THEN N'CPU Usage' 
+			ELSE 'Other Waits' 
+		END
+		,query_hash
+
+	FROM @sessions s 
+		LEFT JOIN @reqs r ON s.session_id = r.session_id 
+		LEFT JOIN sys.dm_exec_query_memory_grants m WITH (READPAST)  ON s.session_id = m.session_id AND m.request_id = r.request_id
+		LEFT JOIN @sql_text t ON t.session_id = s.session_id
+		--OUTER APPLY sys.dm_exec_text_query_plan (r.plan_handle, r.statement_start_offset, r.statement_end_offset) c 
+		LEFT JOIN @tempdb_alloc talloc ON talloc.session_id = s.session_id
+		LEFT JOIN @blockers b ON s.session_id = b.session_id
+		LEFT JOIN #otypes ot ON ot.database_id = t.database_id AND ot.object_id = t.object_id
+		--LEFT JOIN sys.databases sdb ON sdb.database_id = t.dbid
+		--LEFT JOIN sys.dm_os_waiting_tasks wt ON wt.session_id = s.session_id
+	--/*	
+		LEFT JOIN 
+		(
+			SELECT dtst.session_id, ISNULL(der.request_id, 0) request_id, 
+					tlog_used_mb = CONVERT(DECIMAL(10, 2), SUM(database_transaction_log_bytes_used) / 1024. / 1024.), 
+					tlog_reserved_mb = CONVERT(DECIMAL(10, 2), SUM(database_transaction_log_bytes_reserved)  / 1024. / 1024.), 
+					tlog_rows = SUM(database_transaction_log_record_count)
+			FROM 
+				sys.dm_tran_database_transactions [dtdt] WITH (READPAST) 
+					INNER JOIN sys.dm_tran_session_transactions [dtst] WITH (READPAST) ON  [dtst].[transaction_id] = [dtdt].[transaction_id]
+					LEFT OUTER JOIN sys.dm_exec_requests [der] WITH (READPAST) ON [der].[session_id] = [dtst].[session_id]
+			GROUP BY dtst.session_id, der.request_id
+		) tl ON s.session_id = tl.session_id --AND r.request_id = tl.request_id
+	--*/
+		WHERE (r.request_id IS NOT NULL OR s.open_transaction_count > 0 OR b.session_id IS NOT NULL) 
+
+
+	-- Removing harmless sessions
+	IF @skip_waitfor_sessions = 1
+		DELETE @requests
+		WHERE (@skip_waitfor_sessions = 0 OR ([Wait Type] = 'WAITFOR' AND [Wait Resource] IS NULL AND[Blocking SSID-s Count] = 0 AND [Open Trans Count] = 0))
+
+	-- For sessions/requests with NULL SQL statments, we try to pull some query text using DBCC INPUTBUFFER
+	
+	IF EXISTS(SELECT * FROM @requests WHERE [SQL Statement] IS NULL)
+	BEGIN 
+		CREATE TABLE #dbcc_input_buff (session_id INT, request_id INT, event_type nvarchar(30), [parameters] smallint, event_info NVARCHAR(4000))
+		DECLARE @dbcc_inputbuff_cmd VARCHAR(MAX) = ''
+		SELECT @dbcc_inputbuff_cmd += '
+			INSERT INTO #dbcc_input_buff (event_type, [parameters], event_info) EXEC(''DBCC INPUTBUFFER(' + CONVERT(VARCHAR, SSID) + ', ' + CONVERT(VARCHAR, ISNULL(RQID, 0)) + ')'');
+			UPDATE #dbcc_input_buff SET session_id = ' + CONVERT(VARCHAR, SSID) + ', request_id = ' + CASE WHEN RQID IS NULL THEN 'NULL' ELSE CONVERT(VARCHAR, RQID) END + ' WHERE session_id IS NULL ;'
+		FROM @requests
+		WHERE [SQL Statement] IS NULL
+		BEGIN TRY
+			EXEC(@dbcc_inputbuff_cmd)
+			UPDATE r
+			SET [SQL Statement] = d.event_info
+			FROM @requests r
+				INNER JOIN #dbcc_input_buff d ON r.SSID = d.session_id AND ISNULL(r.RQID, 0) = ISNULL(d.request_id, 0)
+		END TRY
+		BEGIN CATCH
+			SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+		END CATCH
+		IF @error_number IS NOT NULL
+			RAISERROR(N'Error pulling query text from DBCC INPUTBUFFER. ErrNumber: %d. ErrMessage: %s. Cmd: %s', 10, 10, @error_number, @error_message, @dbcc_inputbuff_cmd) WITH NOWAIT
+	END 
+	
+	-- Register active transactions
+	DECLARE @act_trans TABLE(
+		SSID smallint, [Tran ID] bigint, [Tran Name] VARCHAR(128), [Database] nvarchar(128), [Tran Begin Time] datetime, [Tran Duration (sec)] int, [Tran Type] varchar(2),
+		[Tran DTC UOW] VARCHAR(64), [Tran State] varchar(50), [Tran Bytes Used] bigint, [Tran Bytes Reserved] bigint, [Tran Record Count] bigint,
+		[Tran Isolation Level] varchar(30) 
+	)
+
+	INSERT INTO @act_trans
+	SELECT s.SSID, t.transaction_id, t.name, database_name = COALESCE(DB_NAME(dt.database_id), CASE WHEN dt.database_id = 32767 THEN 'Resource DB: (32767)' ELSE NULL END),
+			t.transaction_begin_time, transaction_duration_sec = DATEDIFF(SECOND, transaction_begin_time, GETDATE()),
+			transaction_type = CASE transaction_type WHEN 1 THEN 'RW' WHEN 2 THEN 'R' WHEN 3 THEN 'S' WHEN 4 THEN 'D' END,
+			transaction_uow, 
+			transaction_state = CASE transaction_state 
+											WHEN 0 THEN 'NOT INITIALIZED' 
+											WHEN 1 THEN 'INITIALIZED' 
+											WHEN 2 THEN 'ACTIVE' 
+											WHEN 3 THEN 'ENDED (READ-ONLY)' 
+											WHEN 4 THEN 'DISTRIBUTED COMMIT' 
+											WHEN 5 THEN 'WAITING RESOLUTION' 
+											WHEN 6 THEN 'COMMITTED' 
+											WHEN 7 THEN 'ROLLING-BACK' 
+											WHEN 8 THEN 'ROLLED-BACK' END, 
+			database_transaction_log_bytes_used bytes_used,
+			database_transaction_log_bytes_reserved bytes_reserved, 
+			database_transaction_log_record_count record_count, 
+			s.[Tran Isolation Level]
+	FROM @requests s
+		INNER JOIN sys.dm_tran_session_transactions tst WITH (READPAST) ON tst.session_id = s.SSID
+		INNER JOIN sys.dm_tran_active_transactions t WITH (READPAST) ON t.transaction_id = tst.transaction_id
+		INNER JOIN sys.dm_tran_database_transactions dt WITH (READPAST) ON dt.transaction_id = t.transaction_id
+
+
+	;WITH atr AS (
+		SELECT DISTINCT SSID 
+		FROM @act_trans
+		WHERE [Tran State] NOT IN('COMMITTED')
+	)
+	,r0 AS (
+		SELECT r.* 
+			,[Blocking Status] = 
+						CASE WHEN [Blocking SSID-s Count] = 0 AND ISNULL([Blocking SSID], 0) = 0 THEN NULL ELSE
+						CASE WHEN [Blocking SSID-s Count] = 0 AND [Blocking SSID] > 0 THEN 'Blocked' ELSE
+						CASE WHEN [Blocking SSID-s Count] > 0 AND [Blocking SSID] > 0 THEN 'Blocking / Blocked' ELSE
+						CASE WHEN [Blocking SSID-s Count] > 0 AND ISNULL([Blocking SSID], 0) = 0 THEN 'LEADING BLOCKER' ELSE NULL
+					END END END END
+
+		FROM @requests r 
+			LEFT JOIN atr 
+				ON r.SSID = atr.SSID
+			WHERE r.RQID IS NOT NULL OR atr.SSID IS NOT NULL OR r.[Blocking SSID-s Count] > 0 OR r.[Open Trans Count] > 0
+	)
+	-- Persisting active sessios data to database
+	INSERT INTO dbo.dc_rpt_active_sessions
+	SELECT @timestamp, r.*
+	FROM r0 r
+	ORDER BY r.SSID
+
+	-- Persisting active trans. data to database
+
+	INSERT INTO dbo.dc_rpt_active_transactions
+	SELECT @timestamp [Timestamp], SSID, [Tran ID], [Tran Name], [Database], [Tran Begin Time], [Tran Duration (sec)], [Tran Type], 
+		[Tran DTC UOW], [Tran State], [Tran Bytes Used], [Tran Bytes Reserved], [Tran Record Count], [Tran Isolation Level]
+	FROM @act_trans 
+	WHERE [Tran State] NOT IN('COMMITTED')
+	ORDER BY SSID
+
+	-- Begin Blocking Chains
+	CREATE TABLE #blocking_chains (
+		[Chain ID] SMALLINT
+		,[Level] SMALLINT -- Level: 1 - top
+		,SSID INT -- session_id
+		,RQID INT -- request_id
+		,[Blocking SSID] INT -- blocking_session_id
+		,[Blocking Path] VARCHAR(8000) -- blocking path. format is: L1/L2/L3
+	)
+
+	DECLARE @level SMALLINT = 1, @chain_id INT = 1
+	WHILE 1 = 1
+	BEGIN 
+		IF @level = 1
+			INSERT INTO #blocking_chains ([Chain ID], Level, SSID, RQID, [Blocking SSID], [Blocking Path])
+			SELECT SSID, @level, SSID, RQID, 0, ''
+			FROM @requests r1
+			WHERE ISNULL([Blocking SSID], 0) = 0
+				AND EXISTS(SELECT * FROM @requests r2 WHERE r2.[Blocking SSID] = r1.SSID)
+		ELSE
+			INSERT INTO #blocking_chains ([Chain ID], Level, SSID, RQID, [Blocking SSID], [Blocking Path])
+			SELECT x.[Chain ID], @level, r.SSID, r.RQID, x.SSID, x.[Blocking Path] + CASE WHEN @level > 2 THEN '/' ELSE '' END + CONVERT(VARCHAR, x.SSID)
+			FROM @requests r
+				CROSS APPLY (SELECT [Chain ID], SSID, [Blocking Path] FROM #blocking_chains b WHERE [Level] = @level - 1 AND r.[Blocking SSID] = b.SSID)x
+			WHERE ISNULL([Blocking SSID], 0) > 0
+		IF @@ROWCOUNT = 0
+			BREAK
+		SET @level += 1
+	END
+	UPDATE #blocking_chains
+	SET [Blocking Path] += '/' + CONVERT(VARCHAR, [SSID])
+
+	--DROP TABLE IF EXISTS #BCT
+	SELECT DISTINCT IDENTITY(SMALLINT, 1, 1) id, [Chain ID]
+	INTO #bct
+	FROM #blocking_chains
+
+	UPDATE bc
+	SET [Chain ID] = bct.id
+	FROM #blocking_chains bc
+		INNER JOIN #bct bct ON bc.[Chain ID] = bct.[Chain ID]
+
+	INSERT INTO dbo.dc_rpt_active_sessions_blocking_chains
+	SELECT @timestamp [Timestamp], c.*, 
+		[Blocking Start Time] = CASE WHEN Level = 1 THEN CONVERT(DATETIME2(0), NULL) ELSE DATEADD(ms, r.[Wait Time (ms)] * -1, GETDATE()) END,  
+		r.[Wait Time (ms)], [Blocking Tree] = N'├' + REPLICATE(N'─', (c.Level - 1) * 1)  -- TODO: Parametarizuj ovo
+	FROM #blocking_chains c 
+		INNER JOIN @requests r ON c.SSID = r.SSID AND (c.RQID IS NULL OR c.RQID = r.RQID)
+
+
+	DECLARE @wr2 TABLE (id INT IDENTITY(1, 1), wait_resource VARCHAR(256), Resource VARCHAR(50), wait_resource_cleaned VARCHAR(50))
+	
+	;WITH wres AS (
+		SELECT DISTINCT [Wait Resource] wait_resource
+		FROM @requests
+		WHERE [Wait Resource] IS NOT NULL
+	)
+	,w1 AS (
+		SELECT wait_resource, Resource = 
+			CASE WHEN LEFT(wait_resource, 1) BETWEEN '1' AND '9' THEN 'INDEX' 
+				WHEN CHARINDEX('FILE:', wait_resource) > 0 THEN 'FILE'
+				WHEN CHARINDEX('DATABASE:', wait_resource) > 0 THEN 'DATABASE'
+				WHEN CHARINDEX('TAB:', wait_resource) > 0 THEN 'TABLE'
+				WHEN CHARINDEX('OBJECT:', wait_resource) > 0 THEN 'OBJECT'
+				WHEN CHARINDEX('PAGE:', wait_resource) > 0 THEN 'PAGE'
+				WHEN CHARINDEX('RID:', wait_resource) > 0 THEN 'RID'
+				WHEN CHARINDEX('KEY:', wait_resource) > 0 THEN 'KEY'
+				WHEN CHARINDEX('METADATA:', wait_resource) > 0 THEN 'METADATA'
+				WHEN CHARINDEX('LOG_MANAGER', wait_resource) > 0 THEN 'LOG MANAGER'
+			ELSE NULL
+			END
+		FROM wres
+	)
+	,w2 AS (
+		SELECT *
+			,wait_resource_cleaned = LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(wait_resource, 'DATABASE:', ''), 'TAB:', ''), 'OBJECT:', ''), 'PAGE:', ''), 'RID:', ''), 'KEY:', ''), 'FILE:', '')))
+		FROM w1
+	)
+	INSERT INTO @wr2 (wait_resource, Resource, wait_resource_cleaned)
+	SELECT wait_resource, Resource, wait_resource_cleaned
+	FROM w2
+	ORDER BY wait_resource
+
+	DECLARE @WR3 TABLE (id INT, database_id INT, file_id INT, page_id INT, object_id INT, index_id INT, hobt BIGINT, m_type TINYINT, has_error BIT DEFAULT 0)
+
+	CREATE TABLE #PAGE (id INT, object_id INT, index_id INT, m_type TINYINT, has_error BIT DEFAULT 0) 
+
+	CREATE TABLE #PATEMP (ParentObject VARCHAR(255), Object VARCHAR(255), Field VARCHAR(255), VALUE VARCHAR(8000))
+
+	CREATE TABLE #OBJECTS (database_id INT, object_id INT, index_id SMALLINT, schema_name VARCHAR(128), object_name VARCHAR(128), index_name VARCHAR(128))
+
+	DECLARE @id INT = 0, @wait_resource_cleaned VARCHAR(128), @resource VARCHAR(50), @d1 SMALLINT, @d2 SMALLINT, @d3 INT, @sqlcmd NVARCHAR(4000), @has_error BIT
+	DECLARE @database_id INT, @file_id INT, @page_id INT, @slot_id SMALLINT, @hobt BIGINT, @object_id INT, @index_id INT, @ret INT, @m_type TINYINT
+
+	IF @skip_wait_resource_translation = 0 
+	BEGIN 
+		WHILE 1 = 1
+		BEGIN 
+			SELECT TOP 1 @id = id, @wait_resource_cleaned = wait_resource_cleaned, @resource = Resource, @has_error = 0, @error_number = NULL, @file_id = NULL, @object_id = NULL, @index_id = NULL, @hobt = NULL, @page_id = NULL
+				,@d1 = CHARINDEX(':', wait_resource_cleaned)
+				,@d2 = CHARINDEX(':', wait_resource_cleaned, @d1 + 1)
+				,@d3 = CHARINDEX(':', wait_resource_cleaned, @d2 + 1)
+			FROM @wr2
+			WHERE id > @id 
+				AND Resource IN ('INDEX', 'DATABASE', 'TABLE', 'OBJECT', 'PAGE', 'RID', 'KEY') 
+			ORDER BY id
+			IF @@ROWCOUNT = 0
+				BREAK
+			BEGIN TRY 
+				IF @resource IN ('INDEX', 'PAGE') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@file_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@page_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d2 + 1, 18)))
+
+					INSERT INTO @WR3 (id, database_id, file_id, page_id) 
+					VALUES (@id, @database_id, @file_id, @page_id)
+				END
+				IF @resource IN ('RID') 
+				BEGIN
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@file_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@page_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d2 + 1, @d3 - @d2 - 1)))
+
+					INSERT INTO @WR3 (id, database_id, file_id, page_id /*, slot_id*/) 
+					VALUES (@id, @database_id, @file_id, @page_id)
+				END
+				IF @resource IN ('INDEX', 'PAGE', 'RID')
+				BEGIN
+					TRUNCATE TABLE #PATEMP
+					-- Skip dbcc page on tempdb temp tables? 
+					-- TODO: Test this, it doesn't seems that this will work!
+					-- Maybe create persisted table for dbcc page? 
+					IF NOT (@skip_dbcc_page_on_tempdb = 1 AND @database_id = 2)
+					BEGIN
+						SET @sqlcmd = 'DBCC PAGE(' + CONVERT(VARCHAR, @database_id) + ', ' + CONVERT(VARCHAR, @file_id) + ', ' + CONVERT(VARCHAR, @page_id) + ', 2) WITH TABLERESULTS'
+						--RAISERROR(N'CMD: %s', 10, 10, @sqlcmd) WITH NOWAIT
+						INSERT INTO #PATEMP
+						EXEC(@sqlcmd)
+						SELECT @object_id = CONVERT(INT, (SELECT Value FROM #PATEMP WHERE Field = 'Metadata: ObjectId')) 
+							,@index_id = CONVERT(INT, (SELECT Value FROM #PATEMP WHERE Field = 'Metadata: IndexId'))
+							,@m_type = CONVERT(TINYINT, (SELECT Value FROM #PATEMP WHERE Field = 'm_type'))
+						INSERT INTO #PAGE (id, object_id, index_id, m_type)
+						VALUES (@id, @object_id, @index_id, @m_type)
+					END
+				END
+
+				IF @resource IN ('TABLE') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@object_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@index_id = (SELECT CONVERT(INT, REPLACE(SUBSTRING(@wait_resource_cleaned, @d2 + 1, 128), '[COMPILE]', '')))
+					INSERT INTO @WR3 (id, database_id, object_id, index_id) 
+					VALUES (@id, @database_id, @object_id, @index_id)		
+				END
+				IF @resource IN ('OBJECT') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@object_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+					INSERT INTO @WR3 (id, database_id, object_id) 
+					VALUES (@id, @database_id, @object_id)		
+				END
+
+				IF @resource IN ('KEY') 
+				BEGIN
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@hobt = (SELECT CONVERT(BIGINT, LEFT(SUBSTRING(@wait_resource_cleaned, @d1 + 1, 255), CHARINDEX('(', SUBSTRING(@wait_resource_cleaned, @d1 + 1, 255)) - 1)))
+					INSERT INTO @WR3 (id, database_id, hobt) 
+					VALUES (@id, @database_id, @hobt)
+					SET @sqlcmd = '
+					SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+					USE ' + QUOTENAME(DB_NAME(@database_id)) + ';
+					SELECT @object_id = o.object_id, @index_id = i.index_id
+					FROM sys.partitions p 
+						JOIN sys.objects as o on p.object_id = o.object_id
+						JOIN sys.indexes as i on p.index_id = i.index_id and p.object_id = i.object_id
+					WHERE hobt_id = @hobt'
+					EXEC @ret = sp_executesql @sqlcmd, N'@object_id INT OUTPUT, @index_id INT OUTPUT, @hobt BIGINT', @object_id = @object_id OUTPUT, @index_id = @index_id OUTPUT, @hobt = @hobt		
+					IF @ret != 0
+						SET @has_error = 1
+					UPDATE @WR3
+					SET object_id = @object_id
+						,index_id = @index_id
+						,has_error = @has_error
+					WHERE id = @id
+				END
+
+				IF @database_id IS NOT NULL AND @object_id IS NOT NULL --AND @index_id IS NOT NULL
+					AND NOT EXISTS(SELECT * FROM #OBJECTS o WHERE database_id = @database_id AND object_id = @object_id AND (@index_id IS NULL OR index_id = @index_id))
+				BEGIN
+
+					SET @sqlcmd = 'USE ' + QUOTENAME(DB_NAME(@database_id)) + ';
+					INSERT INTO #OBJECTS(database_id, object_id, index_id, schema_name, object_name, index_name)
+					SELECT DB_ID(), @object_id, @index_id, ss.name, o.name, i.name
+					FROM sys.objects o 
+						INNER JOIN sys.schemas ss ON o.schema_id = ss.schema_id
+						LEFT JOIN sys.indexes i on o.object_id = i.object_id AND i.index_id = @index_id
+					WHERE o.object_id = @object_id'
+					EXEC @ret = sp_executesql @sqlcmd, N'@object_id INT, @index_id INT', @object_id = @object_id, @index_id = @index_id
+
+					--SELECT @database_id database_id, @object_id object_id, @sqlcmd sqlcmd -- DEBUG
+
+					--RAISERROR(N'----- %s', 10, 10, @sqlcmd) WITH NOWAIT
+					IF @ret != 0
+						SET @has_error = 1
+					UPDATE @WR3
+					SET has_error = @has_error
+					WHERE id = @id
+				END
+
+				IF @resource IN ('DATABASE') 
+					INSERT INTO @WR3 (id, database_id) 
+					VALUES (@id,
+						(SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+				)	
+
+			END TRY
+			BEGIN CATCH
+				SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+			END CATCH
+			IF @ID % 100 = 0
+				RAISERROR(N'ID: %d', 10, 10, @id) WITH NOWAIT
+			IF @error_number IS NOT NULL
+			BEGIN 
+				RAISERROR(N'Error. ID: %d. Resource: %s. Cleaned: %s. ErrCode: %d. ErrMessage: %s', 10, 10, @id, @resource, @wait_resource_cleaned, @error_number, @error_message) WITH NOWAIT
+				SET @error_number = NULL
+				UPDATE @WR3 SET has_error = 1 WHERE id = @id
+				IF @@ROWCOUNT = 0
+					INSERT INTO @WR3 (id, has_error) VALUES (@id, 1)
+			END
+		END
+
+		-- Update object_id, index_Id, m_type
+		UPDATE w
+		SET object_id = p.object_id
+			,index_id = p.index_id
+			,m_type = p.m_type
+		FROM #PAGE p 
+			INNER JOIN @WR3 w ON w.id = p.id 
+		WHERE p.has_error = 0 AND w.has_error = 0
+
+		INSERT INTO dbo.dc_rpt_active_sessions_wait_resources
+		SELECT @timestamp [Timestamp] 
+			,wait_resource [Wait Resource], Resource
+			,DB_NAME(w3.database_id) [Database]
+			,NULLIF(COALESCE(o.schema_name, '') + COALESCE('.' + o.object_name, ''), '') [Object]
+			,w3.index_id [Index ID]
+			,index_name [Index Name]
+			,m_type [Page Type]
+			,CASE m_type
+				WHEN 1 THEN 'Data page'
+				WHEN 2 THEN 'Index page'
+				WHEN 3 THEN 'Text Mix page'
+				WHEN 4 THEN 'Text Tree page'
+				WHEN 7 THEN 'Sort page'
+				WHEN 8 THEN 'GAM page'
+				WHEN 9 THEN 'SGAM page'
+				WHEN 10 THEN 'IAM page'
+				WHEN 11 THEN 'PFS page'
+				WHEN 13 THEN 'Boot page'
+				WHEN 15 THEN 'File header page'
+				WHEN 16 THEN 'Diff map page'
+				WHEN 17 THEN 'ML map page'
+				WHEN 18 THEN 'DBCC dealloc page'
+				WHEN 19 THEN 'Temp index page'
+				WHEN 20 THEN 'Preallocated BULK LOAD page' 
+			ELSE CASE WHEN m_type IS NULL THEN NULL 
+			ELSE 'Other page' END
+			END [Page Type Desc]
+		FROM @WR3 w3 
+			INNER JOIN @wr2 w2 ON w3.id = w2.id 
+			LEFT JOIN #OBJECTS o ON w3.database_id = o.database_id AND w3.object_id = o.object_id AND (w3.index_id IS NULL OR w3.index_id = o.index_id)
+	END
+	ELSE 
+	BEGIN 
+		INSERT INTO dbo.dc_rpt_active_sessions_wait_resources (Timestamp, [Wait Resource], Resource)
+		SELECT @timestamp, wait_resource, Resource
+		FROM @wr2 w2 
+			--LEFT JOIN #OBJECTS o ON w3.database_id = o.database_id AND w3.object_id = o.object_id AND (w3.index_id IS NULL OR w3.index_id = o.index_id)	
+	END
+
+
+	
+	-- End Wait Resources
+/*
+	TODO: 
+		- Persist collected data to database
+		- Wait_Resource Buffer
+*/
+
+	IF @show_table_results = 1
+	BEGIN 
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions
+		WHERE [Timestamp] = @timestamp
+		
+		SELECT *
+		FROM dbo.dc_rpt_active_transactions
+		WHERE [Timestamp] = @timestamp
+		
+		SELECT b.*, [SQL Statement] = b.[Blocking Tree] + ' ' + s.[SQL Statement]
+		FROM dbo.dc_rpt_active_sessions_blocking_chains b
+			INNER JOIN dbo.dc_rpt_active_sessions s ON s.SSID = b.SSID AND (s.RQID IS NULL OR s.RQID = b.RQID) AND s.Timestamp = @timestamp
+		WHERE b.[Timestamp] = @timestamp
+		ORDER BY [Chain ID], Level, [Blocking Path]
+		
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions_wait_resources
+		WHERE [Timestamp] = @timestamp
+	END
+
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[dc_rpt_active_sessions_blocking_report] @wait_time_sec INT = 60, @blocking_wait_time_sec INT = 0, @force_email_address VARCHAR(255) = NULL, @subject_prefix VARCHAR(50) = NULL
+AS BEGIN 
+/*
+	Procedure to generate blocking chains report and send an e-mail 
+	
+	- V1 9.12.2022 DK
+
+	EXEC dbo.dc_rpt_active_sessions_blocking_report
+
+
+*/
+	SET NOCOUNT ON
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET XACT_ABORT ON
+
+
+	--WAITFOR DELAY '00:30:00' -- Stucked job TEST
+
+	IF NOT EXISTS(SELECT * FROM dbo.dc_rpt_active_sessions_blocking_chains)
+	BEGIN 
+		RAISERROR(N'No blocking chains were detected', 10, 10) WITH NOWAIT
+		RETURN 
+	END
+
+	DECLARE @mail_body NVARCHAR(MAX), @recipients VARCHAR(4000), @subject VARCHAR(255), @importance VARCHAR(20) = 'Normal', @broj_upozorenja INT = 0
+		,@stimestamp VARCHAR(16), @sdatum2 VARCHAR(16), @sblocking_chains VARCHAR(10), @ssessions VARCHAR(20), @swaittime VARCHAR(20), @waittime INT = 0, @sinfo VARCHAR(255)
+		,@error_number INT, @error_message VARCHAR(500), @cfg_sinfo NVARCHAR(4000)
+
+	DECLARE @blocking_alert VARCHAR(128), @profile_name NVARCHAR(255)
+
+	DECLARE @copy_recipients VARCHAR(8000), @bcc_recipients NVARCHAR(4000) 
+-- Clarivate recipients
+	
+-- Get config params 
+
+	DECLARE @lb_status VARCHAR(255), @bb_status VARCHAR(255), @blk_status VARCHAR(255), @threshold_bold INT, @threshold_darkred INT, @threshold_total_wait_time_min_importance_high INT, @total_wait_time_min INT
+	DECLARE @lb_status_fcolor VARCHAR(255), @bb_status_fcolor VARCHAR(255), @blk_status_fcolor VARCHAR(255)
+	DECLARE @title_blocking_chains NVARCHAR(255), @title_sessions NVARCHAR(255), @title_wait_resources NVARCHAR(255), @title_active_transactions NVARCHAR(255), @title_sql_statements NVARCHAR(255)
+		
+	DECLARE @ldb VARCHAR(255) = 'LEADING BLOCKER', @bb VARCHAR(255) = 'Blocking / Blocked', @blk VARCHAR(255) = 'Blocked'
+
+	DECLARE @metric_high VARCHAR(50), @mh_duration_ms BIGINT, @mh_cpu_ms BIGINT, @mh_lreads_p BIGINT, @mh_preads_p BIGINT, @mh_writes_p BIGINT, @mh_gmem_mb BIGINT, @mh_tlog_mb BIGINT, @mh_at_duration_sec BIGINT, @mh_at_tlog_used_mb BIGINT, @mh_at_tlog_reserved_mb BIGINT
+	
+	SELECT @recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 1),
+		@copy_recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 2),
+		@bcc_recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 3),
+		@blocking_alert = COALESCE((SELECT value FROM dbo.dc_config	WHERE config_id = 4), 'Blocking Alert. '), 
+		@profile_name = (SELECT value	FROM dbo.dc_config	WHERE config_id = 5), 
+		@cfg_sinfo = (SELECT value	FROM dbo.dc_config	WHERE config_id = 6), 
+		@lb_status = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 7), @ldb),
+		@bb_status = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 8), @bb),
+		@blk_status = COALESCE((SELECT value FROM dbo.dc_config	WHERE config_id = 9), @blk),
+		@threshold_bold = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 10)), NULL), 
+		@threshold_darkred = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 11)), NULL),
+		@threshold_total_wait_time_min_importance_high = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 12)), NULL),
+		@lb_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 13), 'Orange'),
+		@bb_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 14), 'DarkRed'),
+		@blk_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 15), 'Red'),
+		@title_blocking_chains = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 16), 'Blocking Chains'),
+		@title_sessions = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 17), 'Sessions'),
+		@title_wait_resources = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 18), 'Wait Resources'),
+		@title_active_transactions = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 19), 'Active Transactions'),
+		@title_sql_statements = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 20), 'SQL Statements'), 
+		@metric_high = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 21), ''),
+		@mh_duration_ms = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 22)), NULL),
+		@mh_cpu_ms = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 23)), NULL),
+		@mh_lreads_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 24)), NULL),
+		@mh_preads_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 25)), NULL),
+		@mh_writes_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 26)), NULL),
+		@mh_gmem_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 27)), NULL),
+		@mh_tlog_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 28)), NULL), 
+		@mh_at_duration_sec = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 29)), NULL),
+		@mh_at_tlog_used_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 30)), NULL),
+		@mh_at_tlog_reserved_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 31)), NULL)
+
+
+	-- Check if it's only intellisense 
+/*
+	IF NOT EXISTS(
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions s
+			INNER JOIN dbo.dc_rpt_active_sessions_blocking_chains c ON c.SSID = s.SSID
+		WHERE NOT (
+			Application IN ('Management Studio - Transact-SQL IntelliSense', 'dbForge Search for SQL Server')
+				AND Level > 1 
+				AND c.[Blocking SSID] > 0
+				AND [Blocking SSID-s Count] = 0
+			)
+			AND Level > 1
+		)
+	BEGIN
+		-- while checking if everything is ok
+		SELECT @recipients = 'dusan.krstic@clarivate.com' 
+			,@copy_recipients = NULL
+			,@importance = 'Normal'
+			,@blocking_alert = 'Blocking Alert (IntelliSense). '
+		
+	END
+*/
+	-- Check wait_time_ms threshold
+	IF @wait_time_sec IS NOT NULL AND NOT EXISTS(SELECT * FROM dbo.dc_rpt_active_sessions_blocking_chains WHERE [Level] > 1 AND [Wait Time (ms)] >= (@wait_time_sec * 1000))
+	BEGIN 
+		RAISERROR(N'Some blocking chains were detected, wait times does not exceed wait time threshold of %d seconds.', 10, 10, @wait_time_sec) WITH NOWAIT
+		RETURN
+	END
+
+	DECLARE @iplive_db VARCHAR(255)
+
+	IF NOT EXISTS(SELECT * FROM sys.objects o WHERE type = 'U' AND name = 'dc_cfg_active_sessions_blocking_chains_ignore_list') 
+	BEGIN 
+		CREATE TABLE dbo.dc_cfg_active_sessions_blocking_chains_ignore_list (
+			id INT PRIMARY KEY
+			,object_type CHAR(1) NOT NULL -- P - program; L - Login; H - Host
+			,active BIT NOT NULL DEFAULT 1
+			,value VARCHAR(255) NOT NULL
+			,min_seconds INT DEFAULT 0
+		)
+		INSERT INTO dbo.dc_cfg_active_sessions_blocking_chains_ignore_list VALUES 
+		(1, 'P', 1, 'Microsoft SQL Server Management Studio - Transact-SQL IntelliSense%', 0)
+	END
+
+-- Blocking chains working table
+	IF OBJECT_ID('tempdb.dbo.#blocking_chains') IS NOT NULL
+		DROP TABLE #blocking_chains
+
+	SELECT ID = IDENTITY(INT, 1, 1), [Chain ID] , [Blocking Tree] + /*N' ' +*/ CONVERT(VARCHAR, Level) [Level], Level Level_Int, bc.SSID, CONVERT(DATETIME2(0), s.[Start Time]) [Start Time], s.Status, bc.[Blocking SSID], [Blocking SSID-s Count], [Blocking Path]
+		,[Blocking Status], bc.[Wait Time (ms)] / 1000 [Wait Time (sec)], [Blocking Start Time]
+		,s.[Wait Resource], [Wait Type], /*wr.Resource,*/ Application, Host, Login, COALESCE(LEFT(s.[SQL Statement], 128), '') [SQL Statement]
+		,COALESCE(s.[Request Database], s.[Session Database]) [Database],
+		/*,[Blocking Status 2] = CASE [Blocking Status] WHEN @lb_status THEN @lb_status_fcolor WHEN @bb_status THEN @bb_status_fcolor WHEN @blk_status THEN @blk_status_fcolor END,*/
+		 [Blocking SPID Status] = CASE WHEN bc.[Blocking SSID] > 0 THEN (SELECT TOP 1 s.[Blocking Status] FROM dbo.dc_rpt_active_sessions s WHERE s.SSID = bc.[Blocking SSID]) ELSE NULL END
+	INTO #blocking_chains
+	FROM dbo.dc_rpt_active_sessions_blocking_chains bc
+		INNER JOIN dbo.dc_rpt_active_sessions s ON bc.SSID = s.SSID AND (bc.RQID IS NULL OR bc.RQID = s.RQID)
+		LEFT JOIN dbo.dc_rpt_active_sessions_wait_resources wr ON wr.[Wait Resource] = s.[Wait Resource]
+	WHERE (bc.[Wait Time (ms)] IS NULL OR (@blocking_wait_time_sec IS NULL OR (s.[Wait Time (ms)] >= (@blocking_wait_time_sec * 1000))))
+		-- Check to see if program name is in the ignore list. 
+		AND NOT EXISTS(
+			SELECT * 
+			FROM dbo.dc_cfg_active_sessions_blocking_chains_ignore_list il 
+			WHERE il.active = 1 
+				AND il.object_type = 'P' 
+				AND s.Application LIKE value 
+				AND s.[Wait Time (ms)] / 1000 < COALESCE(min_seconds, 0)
+				AND NOT EXISTS( -- If an ignore list item is in blocking chain, we must include it in report. 
+						SELECT * 
+						FROM dbo.dc_rpt_active_sessions_blocking_chains bc2
+						WHERE bc2.[Blocking SSID] = bc.SSID 
+				)
+		)
+
+	ORDER BY bc.[Chain ID], bc.[Blocking Path] -- bc.Level, bc.[Wait Time (ms)] DESC -- bc.[Blocking Path]
+	
+/*
+	SELECT * FROM #blocking_chains
+	select * FROM dbo.dc_rpt_active_sessions_blocking_chains bc
+	SELECT * FROM dbo.dc_rpt_active_sessions
+*/
+	--DECLARE @hours INT
+	
+	/* HEADER */
+
+	SELECT @stimestamp = CONVERT(VARCHAR, MAX(Timestamp), 121)
+		,@sblocking_chains = CONVERT(VARCHAR, COUNT(DISTINCT [Chain ID]))
+		,@swaittime = CONVERT(VARCHAR, SUM(CASE WHEN Level = 1 THEN 0 ELSE [Wait Time (ms)] END) / 1000)
+		,@waittime = SUM(CASE WHEN Level = 1 THEN 0 ELSE [Wait Time (ms)] END) / 1000
+	FROM dbo.dc_rpt_active_sessions_blocking_chains
+	
+	SET @total_wait_time_min = @waittime / 60
+
+	SELECT @swaittime = CONVERT(VARCHAR(10), @waittime / 60) + ' min. ' + CONVERT(VARCHAR, @waittime % 60) + ' sec.'
+
+	SELECT @ssessions = CONVERT(VARCHAR, (SELECT COUNT(DISTINCT [SSID]) FROM #blocking_chains))
+
+	SELECT @sinfo = REPLACE(REPLACE(REPLACE(@cfg_sinfo, '{0}', @sblocking_chains), '{1}', @ssessions), '{2}', @swaittime) --  N'Chains: {0}; SPID-s: {1}; Total Wait Time: {3}'
+
+	SELECT @subject = COALESCE(@blocking_alert, 'Blocking Alert. ') + COALESCE(@subject_prefix, '') +  @sinfo
+
+-- Wait Resources
+	DECLARE @wait_resources TABLE (ID INT, wait_resource NVARCHAR(256))
+	INSERT INTO @wait_resources (ID, wait_resource)
+	SELECT MIN(c.ID) ID, c.[Wait Resource]
+	FROM  dbo.dc_rpt_active_sessions_wait_resources w
+		INNER JOIN #blocking_chains c ON w.[Wait Resource] = c.[Wait Resource]
+	GROUP BY c.[Wait Resource]
+
+	CREATE TABLE #wait_resources (ID INT IDENTITY(1, 1), wait_resource NVARCHAR(256))
+	INSERT INTO #wait_resources (wait_resource)
+	SELECT wait_resource
+	FROM @wait_resources
+	ORDER BY ID
+
+	
+	SET @MAIL_BODY = N'
+		<html>
+		<head>
+			<style type="text/css">
+				table { margin: 5px; }
+				th { background-color: Gainsboro; }
+				caption {  background-color: WhiteSmoke; color: DarkRed; font-weight: bold; text-align: center; font-style: italic; font-size: 13;}
+			</style>
+		</head>
+		<body><H4>FIP - ' + @@SERVERNAME + N' - Blocking Report - ' + @stimestamp + '. ' + @sinfo + N'</H4>
+			<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_blocking_chains + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>Status</th>
+					<th>Blk SPID-s</th>
+					<th>Blocking Status</th>
+					<th>Blk Start Time</th>
+					<th>Wait Time</th>
+					<th>Wait Type</th>
+					<th>WRID</th>
+					<th>Database</th>
+					<th>Host</th>
+					<th>User</th>
+					<th>Program</th>
+				</tr>'
+ 
+	SELECT 
+		c.ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN [Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, [Blocking SSID]) END + '</td>' +
+
+					N'<td style="text-align:left;color:' + 
+						CASE Status 
+							WHEN 'Sleeping' THEN 'Gray' WHEN 'Running' THEN 'Green' WHEN 'Runnable' THEN 'Olive' WHEN 'Suspended' THEN 'DarkOrange' ELSE 'Black' END
+						+ ';">' + Status + '</td>' +
+
+
+					N'<td align="center">' + CASE WHEN [Blocking SSID-s Count] = 0 THEN '' ELSE CONVERT(VARCHAR, [Blocking SSID-s Count]) END + '</td>' +
+
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor
+						END + ';font-weight: bold;">' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status WHEN @bb THEN @bb_status WHEN @blk THEN @blk_status END + '</td>' +
+/*
+					N'<td style="text-align:right' + CASE WHEN ISNULL([Wait Time (sec)], 0) > 0 THEN ';background-color:' + CASE WHEN c.[Level_Int] = 1 THEN 'Beige' ELSE 'MistyRose' END ELSE '' END + '">' 
+						+ COALESCE(CONVERT(VARCHAR, [Wait Time (sec)]), '') + '</td>' +
+*/
+					N'<td align="center">' + dbo.fn_FormatDateTime([Blocking Start Time], 1, 0) + '</td>' +
+					N'<td style="text-align:center;' + 
+						CASE WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_bold THEN 'font-weight:bold;' ELSE '' END + 
+						CASE WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_darkred THEN 'color:Red;' WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_bold THEN 'color:DarkRed;' ELSE '' END + 
+						CASE WHEN ISNULL([Wait Time (sec)], 0) > 0 THEN 'background-color:' + CASE WHEN c.[Level_Int] = 1 THEN 'Beige' ELSE 'MistyRose' END ELSE '' END + '">' + dbo.fn_FormatSeconds([Wait Time (sec)], NULL, 3) + '</td>' +
+					N'<td style="text-align:center;color:' + CASE WHEN [Wait Type] LIKE 'LCK%' THEN 'Red' ELSE 'Black' END + ';">' + COALESCE([Wait Type], '') + '</td>' +
+					N'<td align="center">' + COALESCE(CONVERT(VARCHAR, w.ID) /* s.[Wait Resource]*/, '') + '</td>' +
+					N'<td align="left">' + COALESCE([Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Host], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Login], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Application], '') + '</td>' +
+--					N'<td align="left">' + [SQL Statement] + '</td>' +
+					N'</tr>'
+	INTO #TRED 
+	FROM   #blocking_chains c
+		LEFT JOIN #wait_resources w ON c.[Wait Resource] = w.wait_resource
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+	
+
+-- Sessions
+
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_sessions + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>RQID</th>
+					<th>Start Time</th>
+					<th>Duration</th>
+					<th>CPU Time</th>
+					<th>Lgcl Reads</th>
+					<th>Phcl Reads</th>
+					<th>Writes</th>
+					<th>Granted Mem</th>
+					<th>Tr.Log Used</th>
+					<th>Op.Trans</th>
+					<th>Isolation</th>
+					<th>ExecObj DB</th>
+					<th>Executing Object</th>
+					<th>ExecObj Type</th>
+					<th>Query Hash</th>
+
+				</tr>'
+
+	SELECT c.ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, s.[RQID]), '') + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatDateTime(s.[Start Time], 2, 0) + '</td>' +
+					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Duration (ms)] >= @mh_duration_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.[Duration (ms)], default, default) + '</td>' +					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[CPU (ms)] >= @mh_cpu_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.[CPU (ms)], default, default) + '</td>' +					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Logical Reads] >= @mh_lreads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Logical Reads], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Physical Reads] >= @mh_preads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Physical Reads], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Writes] >= @mh_writes_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Writes], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Granted Memory (MB)] >= @mh_gmem_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Granted Memory (MB)] * 128.,  default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN ISNULL(s.[TLog Used (MB)], 0) + ISNULL(s.[TLog Reserved (MB)], 0) >= @mh_tlog_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages((s.[TLog Used (MB)] + s.[TLog Reserved (MB)]) * 128., default, default) + '</td>' +
+
+					N'<td align="right">' + CONVERT(VARCHAR, s.[Open Trans Count]) + '</td>' +
+					N'<td align="center">' + CONVERT(VARCHAR, s.[Tran Isolation Level]) + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Object Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Object], '') +  '</td>' +
+					N'<td align="left">' + COALESCE(REPLACE(REPLACE(s.[Object Type], 'SQL_', ''), '_', ' '), '') + '</td>' +
+					N'<td align="left">' + COALESCE(CONVERT(VARCHAR, [Query Hash], 1), '') +  '</td>' +
+
+					N'</tr>'
+	INTO #TRED2 
+	FROM   dbo.dc_rpt_active_sessions s
+		INNER JOIN #blocking_chains c ON s.SSID = c.SSID
+	ORDER BY c.ID
+	
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED2 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+-- Wait Resources
+
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+	--SELECT * FROM dbo.dc_rpt_active_sessions_wait_resources
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_wait_resources + '</caption>
+				<tr>
+					<th>WRID</th>
+					<th>Wait Resource</th>
+					<th>Type</th>
+					<th>Database</th>
+					<th>Object</th>
+					<th>Index ID</th>
+					<th>Index Name</th>
+					<th>Page Type</th>
+					<th>Page Type Description</th>
+				</tr>'
+
+	SELECT wr.ID
+		,MAIL_BODY = 
+					N'<tr>' +
+					N'<td align="center">' + COALESCE(CONVERT(VARCHAR, wr.ID), /* s.[Wait Resource]*/ '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Wait Resource], '') + '</td>' +
+					N'<td align="center">' + COALESCE(w.[Resource], '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Object], '') + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, w.[Index ID]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Index Name], '') + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, w.[Page Type]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Page Type Desc], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED3 
+	FROM   dbo.dc_rpt_active_sessions_wait_resources w
+		INNER JOIN #wait_resources wr ON w.[Wait Resource] = wr.wait_resource
+		--INNER JOIN #blocking_chains c ON w.[Wait Resource] = c.[Wait Resource]
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED3 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+
+-- Active transactions
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+	--SELECT * FROM dbo.dc_rpt_active_transactions
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_active_transactions + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>Tran ID</th>
+					<th>Name</th>
+					<th>Database</th>
+					<th>Begin Time</th>
+					<th>Duration</th>
+					<th>Type</th>
+					<th>DTC UOW</th>
+					<th>State</th>
+					<th>Tr.Log Used</th>
+					<th>Tr.Log Reserved</th>
+					<th>Records Count</th>
+					<th>Isolation Level</th>
+				</tr>'
+
+	SELECT ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+/*
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + 
+					CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_short WHEN @bb THEN @bb_status_short WHEN @blk THEN @blk_status_short END + '</td>' +
+*/
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, t.[Tran ID]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran Name], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Database], '') + '</td>' +
+					N'<td align="left">' + CONVERT(VARCHAR(50), CONVERT(DATETIME2(0), t.[Tran Begin Time]), 121) + '</td>' +
+					
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Duration (sec)] >= @mh_at_duration_sec THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatSeconds(t.[Tran Duration (sec)], NULL, 3) + '</td>' +
+
+/*					N'<td align="center">' + dbo.fn_FormatSeconds(t.[Tran Duration (sec)], NULL, 3) + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Used] / 1024. / 8., default, default) + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Reserved] / 1024. / 8., default, default) + '</td>' +
+
+*/					
+					N'<td align="center">' + COALESCE(t.[Tran Type], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran DTC UOW], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran State], '') + '</td>' +
+
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Bytes Used] / 1024. / 1024. >= @mh_at_tlog_used_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Used] / 1024. / 8., default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Bytes Reserved] / 1024. / 1024. >= @mh_at_tlog_reserved_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Reserved] / 1024. / 8., default, default) + '</td>' +					
+
+					N'<td align="right">' + dbo.fn_FormatNum(t.[Tran Record Count], NULL) + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran Isolation Level], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED4 
+	FROM   dbo.dc_rpt_active_transactions t
+		INNER JOIN #blocking_chains c ON t.SSID = c.SSID
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED4 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+	
+-- Full Query Text
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' + /*max-width: 1200px;*/
+				'<caption>' + @title_sql_statements + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>RQID</th>
+					<th>Command</th>
+					<th>Database</th>
+					<th>SQL Statement</th>
+				</tr>'
+
+	SELECT ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+/*
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + 
+					CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_short WHEN @bb THEN @bb_status_short WHEN @blk THEN @blk_status_short END + '</td>' +
+*/
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, s.[RQID]), '') + '</td>' +
+					N'<td align="center">' + COALESCE(s.[Command], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Request Database], s.[Session Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[SQL Statement], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED5 
+	FROM   dbo.dc_rpt_active_sessions s
+		INNER JOIN #blocking_chains c ON s.SSID = c.SSID
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED5 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+	SELECT @MAIL_BODY += 
+			N'</table><div style = "clear:both;"></div>
+			</body></html>'
+
+	
+	IF @force_email_address IS NOT NULL 
+	BEGIN
+		SELECT @recipients = @force_email_address
+			,@copy_recipients = NULL, @bcc_recipients = NULL
+			,@importance = 'High'
+	END
+	ELSE 
+	BEGIN 
+		IF @total_wait_time_min >= @threshold_total_wait_time_min_importance_high
+			SET @importance = 'High'
+	END
+
+	EXEC msdb.dbo.sp_send_dbmail
+		@body = @mail_body,
+		@body_format ='HTML',
+		@recipients = @recipients, 
+		@copy_recipients = @copy_recipients,
+		@blind_copy_recipients = @bcc_recipients,
+		@importance = @importance,
+		@subject = @subject,
+		@profile_name = @profile_name
+
+	IF @error_number IS NOT NULL
+	BEGIN 
+		RAISERROR(N'Error in procedure dbo.dc_rpt_active_sessions_blocking_report. Number: %d. Message: %s.', 16, 1, @error_number, @error_message) WITH NOWAIT
+		RETURN 1
+	END
+	RETURN 0
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[dc_stucked_jobs_monitor]
+AS BEGIN 
+/*
+	Monitor job/proc to stop stucked jobs
+
+	EXEC dbo.dc_stucked_jobs_monitor
+*/
+
+	SET NOCOUNT ON
+	DECLARE @job_id UNIQUEIDENTIFIER, @job_name SYSNAME, @id INT = 0, @max_seconds INT, @max_seconds_l2 INT, @ret INT, @errors INT = 0, @subject VARCHAR(512), @sub VARCHAR(512), @restart_job BIT, @body VARCHAR(MAX) = ''
+	DECLARE @csv_attachment_name VARCHAR(128) = 'requests.csv', @separator CHAR(1), @send_mail BIT = 0
+	DECLARE @flag1 BIT = 0, @has_blocked_jobs BIT = 0, @running_seconds INT, @d_ins DATETIME2(0) = GETDATE()
+
+--	SELECT @query -- DEBUG
+	DECLARE @stop_jobs TABLE (id INT IDENTITY(1, 1) PRIMARY KEY, active BIT DEFAULT 1, job_name SYSNAME, max_seconds INT, restart_job BIT, max_seconds_l2 INT)
+
+	INSERT INTO @stop_jobs (job_name, active, max_seconds, restart_job, max_seconds_l2) VALUES
+	('DBA: Blocking Alert', 1, 35, 0, 60)	
+
+
+	DECLARE @jobs TABLE (job_signature VARCHAR(255) PRIMARY KEY, job_name VARCHAR(128))
+--/*
+	DECLARE @jobs_running TABLE (session_id SMALLINT, program_name VARCHAR(128), blocking_session_id INT, blocking_program_name NVARCHAR(255), running_time_sec INT)
+
+	INSERT INTO @jobs_running
+	SELECT r.session_id, s.program_name, r.blocking_session_id, sb.program_name, DATEDIFF(SECOND, r.start_time, GETDATE())
+	FROM sys.dm_exec_sessions s WITH (READPAST) 
+		INNER JOIN sys.dm_exec_requests r WITH (READPAST) ON r.session_id = s.session_id
+		LEFT JOIN sys.dm_exec_sessions sb ON sb.session_id = r.blocking_session_id
+	WHERE s.program_name LIKE 'SQLAgent - TSQL JobStep (Job 0x%' AND s.is_user_process = 1 AND r.blocking_session_id != 0
+		AND DATEDIFF(SECOND, r.start_time, GETDATE()) > 60 -- batch started more than a 60 seconds ago.
+
+	IF NOT EXISTS(
+		SELECT *
+		FROM @jobs_running
+	)
+		RETURN 0
+
+	-- Take job signatures of the 'DBA...' stop jobs
+	INSERT INTO @jobs
+	SELECT job_signature = CONVERT(CHAR(12), RIGHT(RTRIM(CONVERT(VARCHAR(128), job_id)), 12)), j.name
+	FROM msdb.dbo.sysjobs j 
+		INNER JOIN @stop_jobs sj ON j.name = sj.job_name
+
+	DECLARE @jobs_to_stop TABLE (id INT IDENTITY(1, 1) PRIMARY KEY, job_name NVARCHAR(255), blocking_session_id INT, blocking_program_name NVARCHAR(255), running_time_sec INT)
+	
+	INSERT INTO @jobs_to_stop (job_name, blocking_session_id, blocking_program_name, running_time_sec)
+	SELECT j.job_name, r.blocking_session_id, r.blocking_program_name, r.running_time_sec
+	FROM @jobs j
+		INNER JOIN @jobs_running r ON CHARINDEX(j.job_signature, r.program_name) > 0
+
+	IF @@ROWCOUNT = 0
+		RETURN 
+
+	SET @subject = @@SERVERNAME + ' - Stucked Jobs Monitor'
+
+
+	DECLARE @error_number INT, @error_message NVARCHAR(4000), @blocking_program_name NVARCHAR(255), @blocking_session_id INT, @running_time_sec INT 
+	WHILE 1 = 1
+	BEGIN 
+		SELECT TOP 1 @id = id, @job_name = job_name, @blocking_program_name = blocking_program_name, @blocking_session_id = blocking_session_id, @running_time_sec = running_time_sec
+		FROM @jobs_to_stop
+		WHERE id > @id
+		ORDER BY id
+		IF @@ROWCOUNT = 0
+			BREAK
+		RAISERROR(N'Stopping job: %s.', 10, 10, @job_name) WITH NOWAIT
+		
+		IF EXISTS(
+			SELECT * 
+			FROM msdb.dbo.sysjobs j
+			WHERE name = @job_name
+		) AND EXISTS(
+			SELECT * 
+			FROM @stop_jobs
+			WHERE job_name = @job_name
+		)
+		BEGIN 
+			SET @send_mail = 1
+			-- Try to stop stucked job
+			BEGIN TRY
+				EXEC @ret = msdb.dbo.sp_stop_job @job_name = @job_name
+			END TRY
+			BEGIN CATCH
+				SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+			END CATCH
+			SELECT @body += 'JOB: ' +  @job_name + CHAR(13) + CHAR(10) 
+					+ 'Server: ' + @@SERVERNAME + CHAR(13) + CHAR(10) 
+					+ 'd_ins (timestamp): ' + CONVERT(VARCHAR(50), @d_ins, 121) + CHAR(13) + CHAR(10)  
+					+ 'Running time (sec): ' + CONVERT(VARCHAR, @running_time_sec) + CHAR(13) + CHAR(10)  
+					+ 'Blocking Session ID: ' + COALESCE(CONVERT(VARCHAR(50), @blocking_session_id), '') + CHAR(13) + CHAR(10)  
+					+ 'Blocking Program Name: ' + COALESCE(@blocking_program_name, '') + CHAR(13) + CHAR(10)  
+					+ 'Error Number: ' + COALESCE(CONVERT(VARCHAR(50), @error_number), '') + CHAR(13) + CHAR(10)  
+					+ 'Error Message: ' + COALESCE(@error_message, '') + CHAR(13) + CHAR(10)  
+			
+			RAISERROR(N'Sending mail... Body: %s', 10, 10, @body) WITH NOWAIT
+			EXEC msdb.dbo.sp_send_dbmail 
+				@recipients = 'dusan.krstic@clarivate.com; femi.aderemi@clarivate.com;', 
+				@subject = @subject, 
+				@body = @body
+		END
+	END
+	IF @errors > 0
+		RAISERROR(N'%d errors during stopping jobs operation.', 16, 1, @errors) WITH NOWAIT
+	RETURN @errors
+END
+GO
+
+..............................................................................................................................................................
+..............................................................................................................................................................
+
+
+USE dba
+GO
+DROP TABLE IF EXISTS dbo.dc_rpt_active_sessions
+GO
+DELETE FROM dbo.dc_config WHERE config_id IN (44)
+
+INSERT INTO dbo.dc_config (config_id, category_name, name, value)
+SELECT 44, 'blocking_alerts', 'tiny_blocked_sessions_wait_time_sec', 0 
+
+
+CREATE TABLE dbo.dc_rpt_active_sessions (
+	[Timestamp] DATETIME2(0), SSID smallint, RQID int, [Object Database] nvarchar(128), [Object] varchar(128), [Object Type] VARCHAR(50), Application varchar(512),	Host varchar(50),	Login varchar(50),	[Start Time] datetime,
+	Status varchar(10), [Blocking SSID] smallint,	[Blocking SSID-s Count] int, [TempDB User (MB)] INT, [TempDB Internal (MB)] INT, [Duration (ms)] int, [CPU (ms)] int,
+	[Logical Reads] bigint,	[Physical Reads] bigint, [Writes] bigint, [Rows] bigint, [Granted Memory (MB)] decimal(10, 1), [Requested Memory (MB)] decimal(10, 1),
+	[Used Memory (MB)] decimal(10, 1),	[Wait Type] nvarchar(60), [Wait Time (ms)] int, [Wait Resource] nvarchar(256), [Query Cost] decimal(10, 1),	Command nvarchar(32),
+	[SQL Statement] varchar(max), [Session Database] varchar(255), [Request Database] nvarchar(128), [Last Wait Type] nvarchar(60),	[Open Trans Count] smallint,
+	[Tran Isolation Level] varchar(30),	[TLOG Used (MB)] decimal(10, 2), [TLOG Reserved (MB)] decimal(10, 2), [TLOG Rows] bigint, [Wait Category] nvarchar(32), [Query Hash] VARBINARY(16), DOP INT,
+	[Blocking Status] varchar(30)
+)
+CREATE CLUSTERED INDEX CX_dc_rpt_active_sessions ON dbo.dc_rpt_active_sessions(Timestamp)
+GO
+
+DROP TABLE IF EXISTS dbo.dc_rpt_active_sessions_query_hashes_exec_stats
+GO
+CREATE TABLE dbo.dc_rpt_active_sessions_query_hashes_exec_stats (
+	timestamp DATETIME2(0), 
+	server_id INT,
+	query_hash VARBINARY(16),
+	plan_cache_rows_count INT,
+	query_hash_plans_count INT, 
+	[execution_count] [bigint] NULL,
+	[total_elapsed_time] [bigint] NULL,
+	[total_worker_time] [bigint] NULL,
+	[total_physical_reads] [bigint] NULL,
+	[total_logical_reads] [bigint] NULL,
+	[total_logical_writes] [bigint] NULL,
+	[total_rows] [bigint] NULL,
+	[total_dop] [bigint] NULL,
+	[total_grant_kb] [bigint] NULL
+)
+GO
+
+CREATE OR ALTER FUNCTION dbo.fn_FormatInt(@number BIGINT, @empty_when_zero BIT = 1)
+RETURNS VARCHAR(50) AS
+BEGIN 
+/*
+	SELECT dbo.fn_FormatInt(1234, 1)
+*/
+	IF @number IS NULL OR (@number = 0 AND @empty_when_zero = 1)
+		RETURN ''
+		
+	DECLARE @ret VARCHAR(50)
+	SET @ret = FORMAT(@number, 'N0')
+	IF @ret = '0' AND @empty_when_zero = 1
+		RETURN ''
+
+	RETURN COALESCE(@ret, '')
+END
+GO
+
+
+
+CREATE OR ALTER PROCEDURE [dbo].[dc_active_sessions_collector] @show_table_results BIT = 0, @skip_waitfor_sessions BIT = 1, @keep_history BIT = 1, @wait_time_sec INT = 60, @blocking_chains BIT = 1
+	,@skip_wait_resource_translation BIT = 0
+	,@skip_dbcc_page_on_tempdb BIT = 1
+AS BEGIN 
+/*
+	Active sessions collector 
+	
+	V 1 - May 2024. - Dusan Krstic 
+
+	EXEC dbo.dc_active_sessions_collector @show_table_results = 1, @blocking_chains = 0, @wait_time_sec = NULL
+	
+*/
+
+--SELECT * FROM sys.dm_io_pending_io_requests
+-- TODO:
+/*
+
+	Skip DBCC PAGE on OBJECT: 2:-1272009229:5 (tempdb, object_id < 0) to reduce possibility of session_collector blocking. Those are local temp objects (tables) anyway.
+	
+*/
+	
+	SET CONTEXT_INFO 0xDBADC005
+
+	-- Timestamp
+	DECLARE @timestamp DATETIME2(0) = GETDATE()
+
+	-- Declare some variables
+	DECLARE @error_number INT, @error_message VARCHAR(4000)
+	DECLARE @version TINYINT, @product_version VARCHAR(50)
+	SELECT @product_version = CONVERT(VARCHAR, SERVERPROPERTY('ProductVersion'))
+	SELECT @version = REPLACE(LEFT(@product_version, 2), '.', '')
+
+	DECLARE @prikaz_transakcija BIT = 1,  -- Indikator da li se prikazuju transakcije
+			@prikaz_aktivnih_waits_lokova BIT = 1,  -- Indikator da li se prikazuju aktivni wait lock-s
+			@prikaz_sql_text_xml BIT = 0, 
+			@jobnames_conversion BIT = 1
+
+
+	DECLARE @job_pattern NVARCHAR(255) = 'SQLAgent - TSQL JobStep (Job ', 
+			@step_pattern NVARCHAR(50) = N' : Step'
+
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET XACT_ABORT ON
+	SET NOCOUNT ON
+
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions_blocking_chains
+	TRUNCATE TABLE dbo.dc_rpt_active_transactions
+	TRUNCATE TABLE dbo.dc_rpt_active_sessions_wait_resources
+
+	DECLARE @step INT = 1
+	DECLARE @server_id INT
+
+	SELECT @server_id = TRY_CONVERT(INT, value) FROM dbo.dc_config WHERE config_id =  35
+
+
+	-- Replace program names patterns
+	DECLARE @pr TABLE (program_name_old NVARCHAR(512), program_name_new VARCHAR(512))
+	INSERT INTO @pr
+		--SELECT 'Microsoft® Windows® Operating System' UNION ALL
+		SELECT 'Microsoft SQL Server Management Studio', 'Management Studio'
+
+	DECLARE @sessions TABLE (
+		session_id SMALLINT PRIMARY KEY, database_name VARCHAR(255), program_name VARCHAR(512), host_name VARCHAR(50), original_login_name VARCHAR(50)
+		,last_request_start_time DATETIME2, last_request_end_time DATETIME2, status VARCHAR(50)
+		,open_transaction_count SMALLINT, transaction_isolation_level TINYINT
+	)
+
+	INSERT INTO @sessions
+	SELECT session_id, NULL /*DB_NAME(s.database_id)*/, program_name, host_name, original_login_name, last_request_start_time, last_request_end_time
+		,status, NULL open_transaction_count, transaction_isolation_level
+	FROM sys.dm_exec_sessions s WITH (READPAST)
+	WHERE s.is_user_process = 1 
+		AND s.session_id != @@SPID --AND NOT EXISTS(SELECT TOP 1 1 FROM @np np WHERE s.program_name LIKE np.program_name)
+
+
+	DECLARE @reqs TABLE (
+		session_id INT, session_database_name VARCHAR(128), request_id SMALLINT, start_time DATETIME, total_elapsed_time BIGINT, blocking_session_id INT, status VARCHAR(50), cpu_time BIGINT, logical_reads BIGINT, 
+		reads BIGINT, writes BIGINT, row_count BIGINT, wait_type VARCHAR(80), wait_time BIGINT, command VARCHAR(80), wait_resource VARCHAR(256), statement_start_offset INT, statement_end_offset INT, last_wait_type VARCHAR(80),
+		sql_handle VARBINARY(64), transaction_isolation_level TINYINT, granted_query_memory INT, database_id INT, plan_handle VARBINARY(64), query_hash VARBINARY(16), DOP INT
+		,UNIQUE (session_id, request_id)
+	)
+	INSERT INTO @reqs
+	SELECT s.session_id, s.database_name session_database_name, request_id, start_time, total_elapsed_time, blocking_session_id, r.status, cpu_time, logical_reads, reads, writes, row_count, wait_type, wait_time, command, wait_resource, 
+			statement_start_offset, statement_end_offset, last_wait_type, sql_handle, r.transaction_isolation_level, granted_query_memory, database_id,
+			plan_handle, query_hash, dop
+	FROM sys.dm_exec_requests r WITH (READPAST)
+		INNER JOIN @sessions s ON s.session_id = r.session_id
+
+-- Update blocking_session_id from sys.sysprocesses
+	UPDATE r
+	SET blocking_session_id = COALESCE(x.blocked, 0)
+		,wait_type = COALESCE(x.lastwaittype, wait_type)
+		,wait_time = COALESCE(x.waittime, wait_time)
+		,wait_resource = COALESCE(x.waitresource, wait_resource)
+	FROM @reqs r
+		CROSS APPLY (SELECT blocked, waittime, lastwaittype, waitresource FROM sys.sysprocesses p WHERE p.spid = r.session_id AND blocked != 0 AND blocked != p.spid) x
+	WHERE r.blocking_session_id = 0 
+
+	
+	DECLARE @blockers TABLE (session_id INT PRIMARY KEY)
+	INSERT INTO @blockers 
+	SELECT DISTINCT blocking_session_id 
+	FROM @reqs
+	WHERE blocking_session_id > 0
+	
+	IF NOT EXISTS(SELECT * FROM @reqs WHERE blocking_session_id > 0) AND @blocking_chains = 1 -- No blocking chains detected
+	BEGIN 
+		RAISERROR(N'Active sessions collector. No blocking chains detected', 10, 10) WITH NOWAIT
+/*		DELETE dbo.dc_log_run_active_sessions_collector WHERE [timestamp] = @timestamp -- TROUBLESHOOTING LOG */
+		RETURN 
+	END 
+	
+	-- Check wait_time_ms threshold
+	IF @wait_time_sec IS NOT NULL AND NOT EXISTS(SELECT * FROM @reqs WHERE blocking_session_id > 0 AND wait_time >= (@wait_time_sec * 1000)) AND @blocking_chains = 1
+	BEGIN 
+		RAISERROR(N'Active sessions collector. Some blocking chains were detected but they do not exceed wait time threshold of %d seconds', 10, 10, @wait_time_sec) WITH NOWAIT
+/*		DELETE dbo.dc_log_run_active_sessions_collector WHERE [timestamp] = @timestamp -- TROUBLESHOOTING LOG */
+		RETURN 
+	END 
+
+	DECLARE @max_wait_time INT 
+	SELECT @max_wait_time = MAX(wait_time)
+	FROM @reqs
+	WHERE blocking_session_id > 0
+
+	RAISERROR(N'Active sessions collector. Blocking chains detected. Max wait time (ms): %d.', 10, 10, @max_wait_time) WITH NOWAIT
+
+	CREATE TABLE #sdb (session_id INT, database_id INT, open_transaction_count INT)
+
+	-- Update session databases for SQL Server version < 2012
+	IF @version < 11
+	BEGIN 
+		UPDATE s 
+		SET database_name = DB_NAME(dbid)
+			,open_transaction_count = p.open_tran
+		FROM @sessions s
+			INNER JOIN sys.sysprocesses p ON s.session_id = p.spid
+		WHERE database_name IS NULL
+	END
+	ELSE
+	BEGIN 
+		INSERT INTO #sdb (session_id)
+		SELECT DISTINCT session_id 
+		FROM @sessions
+
+		EXEC('UPDATE sd SET database_id = s.database_id, open_transaction_count = s.open_transaction_count 
+		FROM #sdb sd 
+			INNER JOIN sys.dm_exec_sessions s WITH (READPAST) ON sd.session_id = s.session_id')
+		UPDATE s 
+		SET database_name = DB_NAME(sd.database_id)
+			,open_transaction_count = sd.open_transaction_count
+		FROM @sessions s
+			INNER JOIN #sdb sd ON s.session_id = sd.session_id
+		WHERE s.database_name IS NULL
+	END
+	
+	/*SET @step = 3; INSERT INTO dbo.dc_log_run_active_sessions_collector ([timestamp], step) VALUES (@timestamp, @step) -- TROUBLESHOOTING LOG */
+	
+	DECLARE @jobs TABLE (job_signature VARCHAR(255) PRIMARY KEY, job_name VARCHAR(128))
+--/*
+	DECLARE @jobs_running TABLE (session_id SMALLINT, program_name VARCHAR(128))
+
+	INSERT INTO @jobs_running
+	SELECT session_id, program_name		
+	FROM @sessions 
+	WHERE program_name LIKE @job_pattern + '%'
+
+	IF EXISTS(
+		SELECT *
+		FROM @jobs_running
+	)
+		INSERT INTO @jobs
+		SELECT job_signature = CONVERT(CHAR(12), RIGHT(RTRIM(CONVERT(VARCHAR(128), job_id)), 12)), 'AGENT JOB: ' + CONVERT(VARCHAR(128), name) job_name 
+		FROM msdb.dbo.sysjobs j 
+
+	DECLARE @jobsteps TABLE (job_signature VARCHAR(255), step_id SMALLINT, step_name VARCHAR(128), UNIQUE (job_signature, step_id))	
+
+/*
+	INSERT INTO @jobsteps
+	SELECT job_signature, step_id, step_name
+	FROM msdb.dbo.sysjobsteps s /*WITH (READPAST)*/
+		INNER JOIN @jobs j ON RIGHT(RTRIM(CONVERT(VARCHAR(128), job_id)), 12) = job_signature
+*/
+	
+	DECLARE @jsteps_tmp TABLE (session_id SMALLINT, job_signature CHAR(12), step_id SMALLINT)
+	
+	INSERT INTO @jsteps_tmp
+	SELECT jr.session_id, j.job_signature, 
+			CONVERT(SMALLINT, LTRIM(RTRIM(REPLACE(REPLACE(SUBSTRING(program_name, CHARINDEX(@step_pattern, program_name), LEN(program_name)), ')', ''), @step_pattern, ''))))
+	FROM @jobs_running jr 
+		INNER JOIN @jobs j ON jr.program_name LIKE '%' + j.job_signature + '%'
+
+	UPDATE s
+		SET program_name = j.job_name + ' (Step ' + CONVERT(VARCHAR, js.step_id) + ')'
+	FROM @sessions s
+		INNER JOIN @jsteps_tmp js ON s.session_id = js.session_id
+		INNER JOIN @jobs j ON js.job_signature = j.job_signature
+		--INNER JOIN @jobsteps jst ON jst.job_signature = j.job_signature AND js.step_id = jst.step_id
+
+	-- Update program names
+	UPDATE s
+	SET program_name = REPLACE(program_name, p.program_name_old, p.program_name_new)
+	FROM @sessions s 
+		INNER JOIN @pr p ON s.program_name LIKE p.program_name_old + '%'
+
+	DECLARE @tempdb_alloc TABLE (session_id INT, tempdb_user_mb INT, tempdb_internal_mb INT)
+	INSERT INTO @tempdb_alloc
+	SELECT  tsu.session_id, 
+			CONVERT(DECIMAL(10, 1), SUM( (((tsu.user_objects_alloc_page_count - user_objects_dealloc_page_count) * 8) / 1024.)) ) AS tempdb_user_mb,
+			CONVERT(DECIMAL(10, 1), SUM( (((tsu.internal_objects_alloc_page_count - internal_objects_dealloc_page_count) * 8) / 1024.)) ) AS tempdb_internal_mb
+	FROM sys.dm_db_task_space_usage tsu WITH (READPAST)
+		INNER JOIN @sessions s ON tsu.session_id = s.session_id
+	GROUP BY tsu.session_id
+
+	DECLARE @sql_text TABLE (session_id SMALLINT, object_id INT, database_id SMALLINT, statement_sql_text VARCHAR(MAX))
+
+	;WITH rq AS (
+		SELECT r.session_id, 
+				q.objectid object_id,
+				q.dbid database_id,
+				r.statement_start_offset, r.statement_end_offset, dbid, objectid, text
+		FROM @reqs r 
+			CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) q
+			LEFT JOIN sys.databases d ON d.database_id = q.dbid
+		)
+	INSERT INTO @sql_text 
+	SELECT session_id, 	
+			object_id, 
+			database_id,
+			statement_sql_text = 
+		  (SELECT CASE WHEN statement_start_offset = 0 AND statement_end_offset = 0 THEN NULL ELSE SUBSTRING(text, statement_start_offset / 2+1 , 
+		  ( (CASE WHEN statement_end_offset = -1 THEN ((CASE WHEN LEN(CONVERT(NVARCHAR(max), text)) < 0 THEN 0 ELSE LEN(CONVERT(NVARCHAR(max), text)) END) * 2) ELSE statement_end_offset END) - statement_start_offset) / 2+1) END
+			)
+	FROM rq
+
+
+-- Fetching proc/fn/triggers types	
+	SELECT DISTINCT database_id, DB_NAME(database_id) database_name
+	INTO #dbs 
+	FROM @sql_text
+	
+	SELECT DISTINCT database_id, object_id, CONVERT(VARCHAR(50), NULL) object_type, CONVERT(VARCHAR(255), NULL) object_name
+	INTO #otypes
+	FROM @sql_text
+
+	IF @@ROWCOUNT > 0
+	BEGIN 
+
+		DECLARE @otypes_cmd VARCHAR(MAX) = ''
+		SELECT @otypes_cmd += '
+			USE ' + QUOTENAME(database_name) + ';
+			UPDATE t 
+			SET object_name = s.name + ''.'' + o.name
+				,object_type = type_desc 
+			FROM #otypes t
+				INNER JOIN sys.objects o ON t.object_id = o.object_id
+				INNER JOIN sys.schemas s ON s.schema_id = o.schema_id
+			WHERE t.database_id = ' + CONVERT(VARCHAR, database_id) + ';
+		'
+		FROM #dbs d
+		WHERE database_name IS NOT NULL
+
+		BEGIN TRY
+			EXEC(@otypes_cmd)
+		END TRY
+		BEGIN CATCH
+			SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+		END CATCH
+		IF @error_number IS NOT NULL
+			RAISERROR(N'Error pulling object type information. ErrNumber: %d. ErrMessage: %s. Cmd: %s', 10, 10, @error_number, @error_message, @otypes_cmd) WITH NOWAIT
+
+	END
+
+
+	DECLARE @requests TABLE (
+		SSID smallint,	RQID int, [Object Database] nvarchar(128), [Object] varchar(128), [Object Type] VARCHAR(50), Application varchar(512),	Host varchar(50),	Login varchar(50),	[Start Time] datetime,
+		Status varchar(10), [Blocking SSID] smallint,	[Blocking SSID-s Count] int, [TempDB User (MB)] INT, [TempDB Internal (MB)] INT, [Duration (ms)] int, [CPU (ms)] int,
+		[Logical Reads] bigint,	[Physical Reads] bigint, [Writes] bigint, [Rows] bigint, [Granted Memory (MB)] decimal(10, 1), [Requested Memory (MB)] decimal(10, 1),
+		[Used Memory (MB)] decimal(10, 1),	[Wait Type] nvarchar(60), [Wait Time (ms)] int, [Wait Resource] nvarchar(256), [Query Cost] decimal(10, 1),	Command nvarchar(32),
+		[SQL Statement] varchar(max), [Session Database] varchar(255), [Request Database] nvarchar(128), [Last Wait Type] nvarchar(60),	[Open Trans Count] smallint,
+		[Tran Isolation Level] varchar(30),	[TLOG Used (MB)] decimal(10, 2), [TLOG Reserved (MB)] decimal(10, 2), [TLOG Rows] bigint, [Wait Category] nvarchar(32), [Query Hash] VARBINARY(16), [DOP] INT
+	)
+
+	INSERT INTO @requests
+	SELECT  s.session_id SSID,
+			r.request_id RQID,
+			--object_id, 
+			DB_NAME(t.database_id) [Object Database],
+			ot.object_name [Object],
+			ot.object_type,
+			s.program_name [Application],
+			s.host_name [Host],
+			s.original_login_name [Login],
+			ISNULL(r.start_time, s.last_request_start_time) [Start Time],
+			--proteklo_vreme = CONVERT(VARCHAR, (r.total_elapsed_time / 1000 / 86400)) + '.' + CONVERT(varchar, DATEADD(ss, r.total_elapsed_time / 1000, 0), 108),  
+			[Status] = CASE COALESCE(r.status, s.status) WHEN 'background' THEN 'Background' WHEN 'Running' THEN 'Running' WHEN 'Runnable' THEN 'Runnable' WHEN 'Sleeping' THEN 'Sleeping' WHEN 'Suspended' THEN 'Suspended' END,
+			r.blocking_session_id [Blocking SSID], 
+			[Blocking SSID-s Count] = (SELECT COUNT(*) FROM @reqs WHERE blocking_session_id = COALESCE(r.session_id, s.session_id)),
+			tempdb_user_mb [TempDB User (MB)], tempdb_internal_mb [TempDB Internal (MB)], 
+			r.total_elapsed_time [Duration (ms)],
+			r.cpu_time [CPU (ms)], 
+			r.logical_reads [Logical Reads], 
+			r.reads [Physical Reads], 
+			r.writes [Writes], 
+			r.row_count [Rows], 
+ 			CONVERT(DECIMAL(10, 1), r.granted_query_memory / 128.) [Granted Memory (MB)], 	
+			CONVERT(DECIMAL(10, 1), requested_memory_kb / 1024.) [Requested Memory (MB)], 
+			CONVERT(DECIMAL(10, 1), used_memory_kb / 1024.) [Used Memory (MB)],
+			r.wait_type [Wait Type], 
+			wait_time [Wait Time (ms)],
+			NULLIF(r.wait_resource, '') [Wait Resource],
+			CONVERT(DECIMAL(10, 1), query_cost) [Query Cost],  	
+			r.command [Command], 
+			t.statement_sql_text [SQL Statement],
+			COALESCE(s.database_name, session_database_name) [Session Database],
+			DB_NAME(r.database_id) [Request Database], 
+			r.last_wait_type [Last Wait Type], 
+			ISNULL(s.open_transaction_count, 0) [Open Trans Count], 
+			[Tran Isolation Level] = CASE COALESCE(r.transaction_isolation_level, s.transaction_isolation_level) WHEN 0 THEN 'Unspecified' WHEN 1 THEN 'Read Uncommitted' WHEN 2 THEN 'Read Committed' WHEN 3 THEN 'Repeatable' WHEN 4 THEN 'Serializable' WHEN 5 THEN 'Snapshot' END
+			,tlog_used_mb [TLOG Used (MB)], tlog_reserved_mb [TLOG Reserved (MB)], tlog_rows [TLOG Rows]
+			,[Wait Category] = 
+			CASE 
+				WHEN wait_type IS NULL THEN 'CPU Usage' --NULL
+				WHEN wait_type = N'SOS_SCHEDULER_YIELD' THEN N'CPU' 
+				WHEN wait_type = N'OLEDB' THEN N'OLEDB Provider' 
+				WHEN wait_type = N'DAC_INIT' THEN N'DAC' 
+				WHEN wait_type = N'THREADPOOL' THEN 'CPU - Unavailable Worker Threads'
+				WHEN wait_type LIKE N'LCK_%' OR wait_type = N'LOCK' THEN N'Lock' 
+				WHEN wait_type LIKE N'LATCH_%' THEN N'Latch' 
+				WHEN wait_type LIKE N'PAGELATCH_%' THEN N'Buffer Latch' 
+				WHEN wait_type LIKE N'PAGEIOLATCH_%' THEN N'Buffer IO' 
+				WHEN wait_type LIKE N'HADR_SYNC_COMMIT' THEN N'Always On - Secondary Synch' 
+				WHEN wait_type LIKE N'HADR_%' OR wait_type LIKE N'PWAIT_HADR_%' THEN N'Always On'
+				WHEN wait_type LIKE N'FFT_%' THEN N'FileTable'
+				WHEN wait_type LIKE N'RESOURCE_SEMAPHORE_%' OR wait_type LIKE N'RESOURCE_SEMAPHORE_QUERY_COMPILE' THEN N'Memory - Compilation'
+				WHEN wait_type IN (N'UTIL_PAGE_ALLOC', N'SOS_VIRTUALMEMORY_LOW', N'SOS_RESERVEDMEMBLOCKLIST', N'RESOURCE_SEMAPHORE', N'CMEMTHREAD', N'CMEMPARTITIONED', N'EE_PMOLOCK', N'MEMORY_ALLOCATION_EXT', N'RESERVED_MEMORY_ALLOCATION_EXT', N'MEMORY_GRANT_UPDATE') THEN N'Memory'
+				WHEN wait_type LIKE N'CLR%' OR wait_type LIKE N'SQLCLR%' THEN N'SQL CLR' 
+				WHEN wait_type LIKE N'DBMIRROR%' OR wait_type = N'MIRROR_SEND_MESSAGE' THEN N'Mirroring' 
+				WHEN wait_type LIKE N'XACT%' or wait_type LIKE N'DTC%' or wait_type LIKE N'TRAN_MARKLATCH_%' or wait_type LIKE N'MSQL_XACT_%' or wait_type = N'TRANSACTION_MUTEX' THEN N'Transaction' 
+				WHEN wait_type LIKE N'PREEMPTIVE_%' THEN N'External APIs or XPs' 
+				WHEN wait_type LIKE N'BROKER_%' AND wait_type <> N'BROKER_RECEIVE_WAITFOR' THEN N'Service Broker' 
+				WHEN wait_type IN (N'LOGMGR', N'LOGBUFFER', N'LOGMGR_RESERVE_APPEND', N'LOGMGR_FLUSH', N'LOGMGR_PMM_LOG', N'CHKPT', N'WRITELOG') THEN N'Tran Log IO' 
+				WHEN wait_type IN (N'ASYNC_NETWORK_IO', N'NET_WAITFOR_PACKET', N'PROXY_NETWORK_IO', N'EXTERNAL_SCRIPT_NETWORK_IO') THEN N'Network IO' 
+				WHEN wait_type IN (N'CXPACKET', N'EXCHANGE', N'CXCONSUMER', N'HTBUILD', N'HTDELETE', N'HTMEMO', N'HTREINIT', N'HTREPARTITION', N'CXROWSET_SYNC', N'EXECSYNC') THEN N'CPU - Parallelism'
+				WHEN wait_type IN (N'WAITFOR', N'WAIT_FOR_RESULTS', N'BROKER_RECEIVE_WAITFOR') THEN N'User Wait' 
+				WHEN wait_type IN (N'TRACEWRITE', N'SQLTRACE_LOCK', N'SQLTRACE_FILE_BUFFER', N'SQLTRACE_FILE_WRITE_IO_COMPLETION', N'SQLTRACE_FILE_READ_IO_COMPLETION', N'SQLTRACE_PENDING_BUFFER_WRITERS', N'SQLTRACE_SHUTDOWN', N'QUERY_TRACEOUT', N'TRACE_EVTNOTIF') THEN N'Tracing' 
+				WHEN wait_type LIKE N'FT_%' OR wait_type IN (N'FULLTEXT GATHERER', N'MSSEARCH', N'PWAIT_RESOURCE_SEMAPHORE_FT_PARALLEL_QUERY_SYNC') THEN N'Full Text Search' 
+				WHEN wait_type IN (N'ASYNC_DISKPOOL_LOCK', N'ASYNC_IO_COMPLETION', N'IO_COMPLETION', N'WRITE_COMPLETION', N'IO_QUEUE_LIMIT', /*N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',*/ N'IO_RETRY') THEN N'Other Disk IO' 
+				WHEN wait_type IN (N'BACKUPIO', N'BACKUPBUFFER', N'BACKUPTHREAD', 'PARALLEL_BACKUP_QUEUE') THEN 'Backup IO'
+				WHEN wait_type LIKE N'SE_REPL_%' or wait_type LIKE N'REPL_%'  or wait_type IN (N'REPLICA_WRITES', N'FCB_REPLICA_WRITE', N'FCB_REPLICA_READ', N'PWAIT_HADRSIM') THEN N'Replication' 
+				WHEN wait_type IN (N'LOG_RATE_GOVERNOR', N'POOL_LOG_RATE_GOVERNOR', N'HADR_THROTTLE_LOG_RATE_GOVERNOR', N'INSTANCE_LOG_RATE_GOVERNOR') THEN N'Log Rate Governor' 
+				WHEN wait_type = N'REPLICA_WRITE' THEN 'Snapshots'
+				WHEN wait_type = N'WAIT_XTP_OFFLINE_CKPT_LOG_IO' OR wait_type = N'WAIT_XTP_CKPT_CLOSE' THEN 'In-Memory OLTP Logging'
+				WHEN wait_type LIKE N'QDS%' THEN N'Query Store'
+				WHEN wait_type LIKE N'XTP%' OR wait_type LIKE N'WAIT_XTP%' THEN N'In-Memory OLTP'
+				WHEN wait_type LIKE N'PARALLEL_REDO%' THEN N'Parallel Redo'
+				WHEN wait_type LIKE N'XE_%' THEN N'XEvents'
+				WHEN wait_type LIKE N'CHECK_%' OR wait_type LIKE 'LOGPOOL_%' THEN N'Internal'
+				WHEN wait_type LIKE N'DEADLOCK_%' THEN N'Deadlock Monitor'
+				WHEN wait_type LIKE N'COLUMNSTORE%' THEN N'Columnstore' 
+				WHEN wait_type = 'CPU Usage' THEN N'CPU Usage' 
+			ELSE 'Other Waits' 
+		END
+		,query_hash, COALESCE(r.DOP, m.dop)
+
+	FROM @sessions s 
+		LEFT JOIN @reqs r ON s.session_id = r.session_id 
+		LEFT JOIN sys.dm_exec_query_memory_grants m WITH (READPAST)  ON s.session_id = m.session_id AND m.request_id = r.request_id
+		LEFT JOIN @sql_text t ON t.session_id = s.session_id
+		--OUTER APPLY sys.dm_exec_text_query_plan (r.plan_handle, r.statement_start_offset, r.statement_end_offset) c 
+		LEFT JOIN @tempdb_alloc talloc ON talloc.session_id = s.session_id
+		LEFT JOIN @blockers b ON s.session_id = b.session_id
+		LEFT JOIN #otypes ot ON ot.database_id = t.database_id AND ot.object_id = t.object_id
+		--LEFT JOIN sys.databases sdb ON sdb.database_id = t.dbid
+		--LEFT JOIN sys.dm_os_waiting_tasks wt ON wt.session_id = s.session_id
+	--/*	
+		LEFT JOIN 
+		(
+			SELECT dtst.session_id, ISNULL(der.request_id, 0) request_id, 
+					tlog_used_mb = CONVERT(DECIMAL(10, 2), SUM(database_transaction_log_bytes_used) / 1024. / 1024.), 
+					tlog_reserved_mb = CONVERT(DECIMAL(10, 2), SUM(database_transaction_log_bytes_reserved)  / 1024. / 1024.), 
+					tlog_rows = SUM(database_transaction_log_record_count)
+			FROM 
+				sys.dm_tran_database_transactions [dtdt] WITH (READPAST) 
+					INNER JOIN sys.dm_tran_session_transactions [dtst] WITH (READPAST) ON  [dtst].[transaction_id] = [dtdt].[transaction_id]
+					LEFT OUTER JOIN sys.dm_exec_requests [der] WITH (READPAST) ON [der].[session_id] = [dtst].[session_id]
+			GROUP BY dtst.session_id, der.request_id
+		) tl ON s.session_id = tl.session_id --AND r.request_id = tl.request_id
+	--*/
+		WHERE (r.request_id IS NOT NULL OR s.open_transaction_count > 0 OR b.session_id IS NOT NULL) 
+
+
+	-- Removing harmless sessions
+	IF @skip_waitfor_sessions = 1
+		DELETE @requests
+		WHERE (@skip_waitfor_sessions = 0 OR ([Wait Type] = 'WAITFOR' AND [Wait Resource] IS NULL AND[Blocking SSID-s Count] = 0 AND [Open Trans Count] = 0))
+
+	-- For sessions/requests with NULL SQL statments, we try to pull some query text using DBCC INPUTBUFFER
+	
+	IF EXISTS(SELECT * FROM @requests WHERE [SQL Statement] IS NULL)
+	BEGIN 
+		CREATE TABLE #dbcc_input_buff (session_id INT, request_id INT, event_type nvarchar(30), [parameters] smallint, event_info NVARCHAR(4000))
+		DECLARE @dbcc_inputbuff_cmd VARCHAR(MAX) = ''
+		SELECT @dbcc_inputbuff_cmd += '
+			INSERT INTO #dbcc_input_buff (event_type, [parameters], event_info) EXEC(''DBCC INPUTBUFFER(' + CONVERT(VARCHAR, SSID) + ', ' + CONVERT(VARCHAR, ISNULL(RQID, 0)) + ')'');
+			UPDATE #dbcc_input_buff SET session_id = ' + CONVERT(VARCHAR, SSID) + ', request_id = ' + CASE WHEN RQID IS NULL THEN 'NULL' ELSE CONVERT(VARCHAR, RQID) END + ' WHERE session_id IS NULL ;'
+		FROM @requests
+		WHERE [SQL Statement] IS NULL
+		BEGIN TRY
+			EXEC(@dbcc_inputbuff_cmd)
+			UPDATE r
+			SET [SQL Statement] = d.event_info
+			FROM @requests r
+				INNER JOIN #dbcc_input_buff d ON r.SSID = d.session_id AND ISNULL(r.RQID, 0) = ISNULL(d.request_id, 0)
+		END TRY
+		BEGIN CATCH
+			SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+		END CATCH
+		IF @error_number IS NOT NULL
+			RAISERROR(N'Error pulling query text from DBCC INPUTBUFFER. ErrNumber: %d. ErrMessage: %s. Cmd: %s', 10, 10, @error_number, @error_message, @dbcc_inputbuff_cmd) WITH NOWAIT
+	END 
+	
+	-- Register active transactions
+	DECLARE @act_trans TABLE(
+		SSID smallint, [Tran ID] bigint, [Tran Name] VARCHAR(128), [Database] nvarchar(128), [Tran Begin Time] datetime, [Tran Duration (sec)] int, [Tran Type] varchar(2),
+		[Tran DTC UOW] VARCHAR(64), [Tran State] varchar(50), [Tran Bytes Used] bigint, [Tran Bytes Reserved] bigint, [Tran Record Count] bigint,
+		[Tran Isolation Level] varchar(30) 
+	)
+
+	INSERT INTO @act_trans
+	SELECT s.SSID, t.transaction_id, t.name, database_name = COALESCE(DB_NAME(dt.database_id), CASE WHEN dt.database_id = 32767 THEN 'Resource DB: (32767)' ELSE NULL END),
+			t.transaction_begin_time, transaction_duration_sec = DATEDIFF(SECOND, transaction_begin_time, GETDATE()),
+			transaction_type = CASE transaction_type WHEN 1 THEN 'RW' WHEN 2 THEN 'R' WHEN 3 THEN 'S' WHEN 4 THEN 'D' END,
+			transaction_uow, 
+			transaction_state = CASE transaction_state 
+											WHEN 0 THEN 'NOT INITIALIZED' 
+											WHEN 1 THEN 'INITIALIZED' 
+											WHEN 2 THEN 'ACTIVE' 
+											WHEN 3 THEN 'ENDED (READ-ONLY)' 
+											WHEN 4 THEN 'DISTRIBUTED COMMIT' 
+											WHEN 5 THEN 'WAITING RESOLUTION' 
+											WHEN 6 THEN 'COMMITTED' 
+											WHEN 7 THEN 'ROLLING-BACK' 
+											WHEN 8 THEN 'ROLLED-BACK' END, 
+			database_transaction_log_bytes_used bytes_used,
+			database_transaction_log_bytes_reserved bytes_reserved, 
+			database_transaction_log_record_count record_count, 
+			s.[Tran Isolation Level]
+	FROM @requests s
+		INNER JOIN sys.dm_tran_session_transactions tst WITH (READPAST) ON tst.session_id = s.SSID
+		INNER JOIN sys.dm_tran_active_transactions t WITH (READPAST) ON t.transaction_id = tst.transaction_id
+		INNER JOIN sys.dm_tran_database_transactions dt WITH (READPAST) ON dt.transaction_id = t.transaction_id
+
+
+	;WITH atr AS (
+		SELECT DISTINCT SSID 
+		FROM @act_trans
+		WHERE [Tran State] NOT IN('COMMITTED')
+	)
+	,r0 AS (
+		SELECT r.* 
+			,[Blocking Status] = 
+						CASE WHEN [Blocking SSID-s Count] = 0 AND ISNULL([Blocking SSID], 0) = 0 THEN NULL ELSE
+						CASE WHEN [Blocking SSID-s Count] = 0 AND [Blocking SSID] > 0 THEN 'Blocked' ELSE
+						CASE WHEN [Blocking SSID-s Count] > 0 AND [Blocking SSID] > 0 THEN 'Blocking / Blocked' ELSE
+						CASE WHEN [Blocking SSID-s Count] > 0 AND ISNULL([Blocking SSID], 0) = 0 THEN 'LEADING BLOCKER' ELSE NULL
+					END END END END
+
+		FROM @requests r 
+			LEFT JOIN atr 
+				ON r.SSID = atr.SSID
+			WHERE r.RQID IS NOT NULL OR atr.SSID IS NOT NULL OR r.[Blocking SSID-s Count] > 0 OR r.[Open Trans Count] > 0
+	)
+	-- Persisting active sessios data to database
+	INSERT INTO dbo.dc_rpt_active_sessions
+	SELECT @timestamp, r.*
+	FROM r0 r
+	ORDER BY r.SSID
+
+	-- Persisting active trans. data to database
+
+	INSERT INTO dbo.dc_rpt_active_transactions
+	SELECT @timestamp [Timestamp], SSID, [Tran ID], [Tran Name], [Database], [Tran Begin Time], [Tran Duration (sec)], [Tran Type], 
+		[Tran DTC UOW], [Tran State], [Tran Bytes Used], [Tran Bytes Reserved], [Tran Record Count], [Tran Isolation Level]
+	FROM @act_trans 
+	WHERE [Tran State] NOT IN('COMMITTED')
+	ORDER BY SSID
+
+	-- Begin Blocking Chains
+	CREATE TABLE #blocking_chains (
+		[Chain ID] SMALLINT
+		,[Level] SMALLINT -- Level: 1 - top
+		,SSID INT -- session_id
+		,RQID INT -- request_id
+		,[Blocking SSID] INT -- blocking_session_id
+		,[Blocking Path] VARCHAR(8000) -- blocking path. format is: L1/L2/L3
+	)
+
+	DECLARE @level SMALLINT = 1, @chain_id INT = 1
+	WHILE 1 = 1
+	BEGIN 
+		IF @level = 1
+			INSERT INTO #blocking_chains ([Chain ID], Level, SSID, RQID, [Blocking SSID], [Blocking Path])
+			SELECT SSID, @level, SSID, RQID, 0, ''
+			FROM @requests r1
+			WHERE ISNULL([Blocking SSID], 0) = 0
+				AND EXISTS(SELECT * FROM @requests r2 WHERE r2.[Blocking SSID] = r1.SSID)
+		ELSE
+			INSERT INTO #blocking_chains ([Chain ID], Level, SSID, RQID, [Blocking SSID], [Blocking Path])
+			SELECT x.[Chain ID], @level, r.SSID, r.RQID, x.SSID, x.[Blocking Path] + CASE WHEN @level > 2 THEN '/' ELSE '' END + CONVERT(VARCHAR, x.SSID)
+			FROM @requests r
+				CROSS APPLY (SELECT [Chain ID], SSID, [Blocking Path] FROM #blocking_chains b WHERE [Level] = @level - 1 AND r.[Blocking SSID] = b.SSID)x
+			WHERE ISNULL([Blocking SSID], 0) > 0
+		IF @@ROWCOUNT = 0
+			BREAK
+		SET @level += 1
+	END
+	UPDATE #blocking_chains
+	SET [Blocking Path] += '/' + CONVERT(VARCHAR, [SSID])
+
+	--DROP TABLE IF EXISTS #BCT
+	SELECT DISTINCT IDENTITY(SMALLINT, 1, 1) id, [Chain ID]
+	INTO #bct
+	FROM #blocking_chains
+
+	UPDATE bc
+	SET [Chain ID] = bct.id
+	FROM #blocking_chains bc
+		INNER JOIN #bct bct ON bc.[Chain ID] = bct.[Chain ID]
+
+	INSERT INTO dbo.dc_rpt_active_sessions_blocking_chains
+	SELECT @timestamp [Timestamp], c.*, 
+		[Blocking Start Time] = CASE WHEN Level = 1 THEN CONVERT(DATETIME2(0), NULL) ELSE DATEADD(ms, r.[Wait Time (ms)] * -1, GETDATE()) END,  
+		r.[Wait Time (ms)], [Blocking Tree] = N'?' + REPLICATE(N'?', (c.Level - 1) * 1)  -- TODO: Parametarizuj ovo
+	FROM #blocking_chains c 
+		INNER JOIN @requests r ON c.SSID = r.SSID AND (c.RQID IS NULL OR c.RQID = r.RQID)
+
+
+	DECLARE @wr2 TABLE (id INT IDENTITY(1, 1), wait_resource VARCHAR(256), Resource VARCHAR(50), wait_resource_cleaned VARCHAR(50))
+	
+	;WITH wres AS (
+		SELECT DISTINCT [Wait Resource] wait_resource
+		FROM @requests
+		WHERE [Wait Resource] IS NOT NULL
+	)
+	,w1 AS (
+		SELECT wait_resource, Resource = 
+			CASE WHEN LEFT(wait_resource, 1) BETWEEN '1' AND '9' THEN 'INDEX' 
+				WHEN CHARINDEX('FILE:', wait_resource) > 0 THEN 'FILE'
+				WHEN CHARINDEX('DATABASE:', wait_resource) > 0 THEN 'DATABASE'
+				WHEN CHARINDEX('TAB:', wait_resource) > 0 THEN 'TABLE'
+				WHEN CHARINDEX('OBJECT:', wait_resource) > 0 THEN 'OBJECT'
+				WHEN CHARINDEX('PAGE:', wait_resource) > 0 THEN 'PAGE'
+				WHEN CHARINDEX('RID:', wait_resource) > 0 THEN 'RID'
+				WHEN CHARINDEX('KEY:', wait_resource) > 0 THEN 'KEY'
+				WHEN CHARINDEX('METADATA:', wait_resource) > 0 THEN 'METADATA'
+				WHEN CHARINDEX('LOG_MANAGER', wait_resource) > 0 THEN 'LOG MANAGER'
+			ELSE NULL
+			END
+		FROM wres
+	)
+	,w2 AS (
+		SELECT *
+			,wait_resource_cleaned = LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(wait_resource, 'DATABASE:', ''), 'TAB:', ''), 'OBJECT:', ''), 'PAGE:', ''), 'RID:', ''), 'KEY:', ''), 'FILE:', '')))
+		FROM w1
+	)
+	INSERT INTO @wr2 (wait_resource, Resource, wait_resource_cleaned)
+	SELECT wait_resource, Resource, wait_resource_cleaned
+	FROM w2
+	ORDER BY wait_resource
+
+	DECLARE @WR3 TABLE (id INT, database_id INT, file_id INT, page_id INT, object_id INT, index_id INT, hobt BIGINT, m_type TINYINT, has_error BIT DEFAULT 0)
+
+	CREATE TABLE #PAGE (id INT, object_id INT, index_id INT, m_type TINYINT, has_error BIT DEFAULT 0) 
+
+	CREATE TABLE #PATEMP (ParentObject VARCHAR(255), Object VARCHAR(255), Field VARCHAR(255), VALUE VARCHAR(8000))
+
+	CREATE TABLE #OBJECTS (database_id INT, object_id INT, index_id SMALLINT, schema_name VARCHAR(128), object_name VARCHAR(128), index_name VARCHAR(128))
+
+	DECLARE @id INT = 0, @wait_resource_cleaned VARCHAR(128), @resource VARCHAR(50), @d1 SMALLINT, @d2 SMALLINT, @d3 INT, @sqlcmd NVARCHAR(4000), @has_error BIT
+	DECLARE @database_id INT, @file_id INT, @page_id INT, @slot_id SMALLINT, @hobt BIGINT, @object_id INT, @index_id INT, @ret INT, @m_type TINYINT
+
+	IF @skip_wait_resource_translation = 0 
+	BEGIN 
+		WHILE 1 = 1
+		BEGIN 
+			SELECT TOP 1 @id = id, @wait_resource_cleaned = wait_resource_cleaned, @resource = Resource, @has_error = 0, @error_number = NULL, @file_id = NULL, @object_id = NULL, @index_id = NULL, @hobt = NULL, @page_id = NULL
+				,@d1 = CHARINDEX(':', wait_resource_cleaned)
+				,@d2 = CHARINDEX(':', wait_resource_cleaned, @d1 + 1)
+				,@d3 = CHARINDEX(':', wait_resource_cleaned, @d2 + 1)
+			FROM @wr2
+			WHERE id > @id 
+				AND Resource IN ('INDEX', 'DATABASE', 'TABLE', 'OBJECT', 'PAGE', 'RID', 'KEY') 
+			ORDER BY id
+			IF @@ROWCOUNT = 0
+				BREAK
+			BEGIN TRY 
+				IF @resource IN ('INDEX', 'PAGE') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@file_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@page_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d2 + 1, 18)))
+
+					INSERT INTO @WR3 (id, database_id, file_id, page_id) 
+					VALUES (@id, @database_id, @file_id, @page_id)
+				END
+				IF @resource IN ('RID') 
+				BEGIN
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@file_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@page_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d2 + 1, @d3 - @d2 - 1)))
+
+					INSERT INTO @WR3 (id, database_id, file_id, page_id /*, slot_id*/) 
+					VALUES (@id, @database_id, @file_id, @page_id)
+				END
+				IF @resource IN ('INDEX', 'PAGE', 'RID')
+				BEGIN
+					TRUNCATE TABLE #PATEMP
+					-- Skip dbcc page on tempdb temp tables? 
+					-- TODO: Test this, it doesn't seems that this will work!
+					-- Maybe create persisted table for dbcc page? 
+					IF NOT (@skip_dbcc_page_on_tempdb = 1 AND @database_id = 2)
+					BEGIN
+						SET @sqlcmd = 'DBCC PAGE(' + CONVERT(VARCHAR, @database_id) + ', ' + CONVERT(VARCHAR, @file_id) + ', ' + CONVERT(VARCHAR, @page_id) + ', 2) WITH TABLERESULTS'
+						--RAISERROR(N'CMD: %s', 10, 10, @sqlcmd) WITH NOWAIT
+						INSERT INTO #PATEMP
+						EXEC(@sqlcmd)
+						SELECT @object_id = CONVERT(INT, (SELECT Value FROM #PATEMP WHERE Field = 'Metadata: ObjectId')) 
+							,@index_id = CONVERT(INT, (SELECT Value FROM #PATEMP WHERE Field = 'Metadata: IndexId'))
+							,@m_type = CONVERT(TINYINT, (SELECT Value FROM #PATEMP WHERE Field = 'm_type'))
+						INSERT INTO #PAGE (id, object_id, index_id, m_type)
+						VALUES (@id, @object_id, @index_id, @m_type)
+					END
+				END
+
+				IF @resource IN ('TABLE') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@object_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+						,@index_id = (SELECT CONVERT(INT, REPLACE(SUBSTRING(@wait_resource_cleaned, @d2 + 1, 128), '[COMPILE]', '')))
+					INSERT INTO @WR3 (id, database_id, object_id, index_id) 
+					VALUES (@id, @database_id, @object_id, @index_id)		
+				END
+				IF @resource IN ('OBJECT') 
+				BEGIN 
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@object_id = (SELECT CONVERT(INT, SUBSTRING(@wait_resource_cleaned, @d1 + 1, @d2 - @d1 - 1)))
+					INSERT INTO @WR3 (id, database_id, object_id) 
+					VALUES (@id, @database_id, @object_id)		
+				END
+
+				IF @resource IN ('KEY') 
+				BEGIN
+					SELECT @database_id = (SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+						,@hobt = (SELECT CONVERT(BIGINT, LEFT(SUBSTRING(@wait_resource_cleaned, @d1 + 1, 255), CHARINDEX('(', SUBSTRING(@wait_resource_cleaned, @d1 + 1, 255)) - 1)))
+					INSERT INTO @WR3 (id, database_id, hobt) 
+					VALUES (@id, @database_id, @hobt)
+					SET @sqlcmd = '
+					SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+					USE ' + QUOTENAME(DB_NAME(@database_id)) + ';
+					SELECT @object_id = o.object_id, @index_id = i.index_id
+					FROM sys.partitions p 
+						JOIN sys.objects as o on p.object_id = o.object_id
+						JOIN sys.indexes as i on p.index_id = i.index_id and p.object_id = i.object_id
+					WHERE hobt_id = @hobt'
+					EXEC @ret = sp_executesql @sqlcmd, N'@object_id INT OUTPUT, @index_id INT OUTPUT, @hobt BIGINT', @object_id = @object_id OUTPUT, @index_id = @index_id OUTPUT, @hobt = @hobt		
+					IF @ret != 0
+						SET @has_error = 1
+					UPDATE @WR3
+					SET object_id = @object_id
+						,index_id = @index_id
+						,has_error = @has_error
+					WHERE id = @id
+				END
+
+				IF @database_id IS NOT NULL AND @object_id IS NOT NULL --AND @index_id IS NOT NULL
+					AND NOT EXISTS(SELECT * FROM #OBJECTS o WHERE database_id = @database_id AND object_id = @object_id AND (@index_id IS NULL OR index_id = @index_id))
+				BEGIN
+
+					SET @sqlcmd = 'USE ' + QUOTENAME(DB_NAME(@database_id)) + ';
+					INSERT INTO #OBJECTS(database_id, object_id, index_id, schema_name, object_name, index_name)
+					SELECT DB_ID(), @object_id, @index_id, ss.name, o.name, i.name
+					FROM sys.objects o 
+						INNER JOIN sys.schemas ss ON o.schema_id = ss.schema_id
+						LEFT JOIN sys.indexes i on o.object_id = i.object_id AND i.index_id = @index_id
+					WHERE o.object_id = @object_id'
+					EXEC @ret = sp_executesql @sqlcmd, N'@object_id INT, @index_id INT', @object_id = @object_id, @index_id = @index_id
+
+					--SELECT @database_id database_id, @object_id object_id, @sqlcmd sqlcmd -- DEBUG
+
+					--RAISERROR(N'----- %s', 10, 10, @sqlcmd) WITH NOWAIT
+					IF @ret != 0
+						SET @has_error = 1
+					UPDATE @WR3
+					SET has_error = @has_error
+					WHERE id = @id
+				END
+
+				IF @resource IN ('DATABASE') 
+					INSERT INTO @WR3 (id, database_id) 
+					VALUES (@id,
+						(SELECT CONVERT(INT, LEFT(@wait_resource_cleaned, @d1 - 1)))
+				)	
+
+			END TRY
+			BEGIN CATCH
+				SELECT @error_number = ERROR_NUMBER(), @error_message = ERROR_MESSAGE()
+			END CATCH
+			IF @ID % 100 = 0
+				RAISERROR(N'ID: %d', 10, 10, @id) WITH NOWAIT
+			IF @error_number IS NOT NULL
+			BEGIN 
+				RAISERROR(N'Error. ID: %d. Resource: %s. Cleaned: %s. ErrCode: %d. ErrMessage: %s', 10, 10, @id, @resource, @wait_resource_cleaned, @error_number, @error_message) WITH NOWAIT
+				SET @error_number = NULL
+				UPDATE @WR3 SET has_error = 1 WHERE id = @id
+				IF @@ROWCOUNT = 0
+					INSERT INTO @WR3 (id, has_error) VALUES (@id, 1)
+			END
+		END
+
+		-- Update object_id, index_Id, m_type
+		UPDATE w
+		SET object_id = p.object_id
+			,index_id = p.index_id
+			,m_type = p.m_type
+		FROM #PAGE p 
+			INNER JOIN @WR3 w ON w.id = p.id 
+		WHERE p.has_error = 0 AND w.has_error = 0
+
+		INSERT INTO dbo.dc_rpt_active_sessions_wait_resources
+		SELECT @timestamp [Timestamp] 
+			,wait_resource [Wait Resource], Resource
+			,DB_NAME(w3.database_id) [Database]
+			,NULLIF(COALESCE(o.schema_name, '') + COALESCE('.' + o.object_name, ''), '') [Object]
+			,w3.index_id [Index ID]
+			,index_name [Index Name]
+			,m_type [Page Type]
+			,CASE m_type
+				WHEN 1 THEN 'Data page'
+				WHEN 2 THEN 'Index page'
+				WHEN 3 THEN 'Text Mix page'
+				WHEN 4 THEN 'Text Tree page'
+				WHEN 7 THEN 'Sort page'
+				WHEN 8 THEN 'GAM page'
+				WHEN 9 THEN 'SGAM page'
+				WHEN 10 THEN 'IAM page'
+				WHEN 11 THEN 'PFS page'
+				WHEN 13 THEN 'Boot page'
+				WHEN 15 THEN 'File header page'
+				WHEN 16 THEN 'Diff map page'
+				WHEN 17 THEN 'ML map page'
+				WHEN 18 THEN 'DBCC dealloc page'
+				WHEN 19 THEN 'Temp index page'
+				WHEN 20 THEN 'Preallocated BULK LOAD page' 
+			ELSE CASE WHEN m_type IS NULL THEN NULL 
+			ELSE 'Other page' END
+			END [Page Type Desc]
+		FROM @WR3 w3 
+			INNER JOIN @wr2 w2 ON w3.id = w2.id 
+			LEFT JOIN #OBJECTS o ON w3.database_id = o.database_id AND w3.object_id = o.object_id AND (w3.index_id IS NULL OR w3.index_id = o.index_id)
+	END
+	ELSE 
+	BEGIN 
+		INSERT INTO dbo.dc_rpt_active_sessions_wait_resources (Timestamp, [Wait Resource], Resource)
+		SELECT @timestamp, wait_resource, Resource
+		FROM @wr2 w2 
+			--LEFT JOIN #OBJECTS o ON w3.database_id = o.database_id AND w3.object_id = o.object_id AND (w3.index_id IS NULL OR w3.index_id = o.index_id)	
+	END
+
+	SELECT DISTINCT [Query Hash]
+	INTO #query_hashes
+	FROM dbo.dc_rpt_active_sessions s 
+		INNER JOIN dbo.dc_rpt_active_sessions_blocking_chains c ON s.SSID = c.SSID
+	WHERE [Query Hash] IS NOT NULL
+		AND [Query Hash] != 0x0
+		
+
+	IF @@ROWCOUNT > 0
+		INSERT INTO dbo.dc_rpt_active_sessions_query_hashes_exec_stats 
+		SELECT @timestamp, @server_id, qs.query_hash, COUNT(*), COUNT(DISTINCT qs.query_plan_hash), SUM(execution_count), SUM(total_elapsed_time), SUM(total_worker_time), SUM(total_physical_reads), SUM(total_logical_reads), SUM(total_logical_writes), SUM(total_rows), SUM(total_dop), SUM(total_grant_kb)
+		FROM sys.dm_exec_query_stats qs
+			INNER JOIN #query_hashes qh ON qs.query_hash = qh.[Query Hash]
+		GROUP BY qs.query_hash
+
+	
+	-- End Wait Resources
+/*
+	TODO: 
+		- Persist collected data to database
+		- Wait_Resource Buffer
+*/
+
+	IF @show_table_results = 1
+	BEGIN 
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions
+		WHERE [Timestamp] = @timestamp
+		
+		SELECT *
+		FROM dbo.dc_rpt_active_transactions
+		WHERE [Timestamp] = @timestamp
+		
+		SELECT b.*, [SQL Statement] = b.[Blocking Tree] + ' ' + s.[SQL Statement]
+		FROM dbo.dc_rpt_active_sessions_blocking_chains b
+			INNER JOIN dbo.dc_rpt_active_sessions s ON s.SSID = b.SSID AND (s.RQID IS NULL OR s.RQID = b.RQID) AND s.Timestamp = @timestamp
+		WHERE b.[Timestamp] = @timestamp
+		ORDER BY [Chain ID], Level, [Blocking Path]
+		
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions_wait_resources
+		WHERE [Timestamp] = @timestamp
+	END
+
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[dc_rpt_active_sessions_blocking_report] @wait_time_sec INT = 60, @blocking_wait_time_sec INT = 0, @force_email_address VARCHAR(255) = NULL, @subject_prefix VARCHAR(50) = NULL
+AS BEGIN 
+/*
+	Procedure to generate blocking chains report and send an e-mail 
+	
+	- V1 9.12.2022 DK
+
+	EXEC dbo.dc_rpt_active_sessions_blocking_report
+
+
+*/
+	SET NOCOUNT ON
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET XACT_ABORT ON
+
+
+	--WAITFOR DELAY '00:30:00' -- Stucked job TEST
+
+	IF NOT EXISTS(SELECT * FROM dbo.dc_rpt_active_sessions_blocking_chains)
+	BEGIN 
+		RAISERROR(N'No blocking chains were detected', 10, 10) WITH NOWAIT
+		RETURN 
+	END
+
+	DECLARE @mail_body NVARCHAR(MAX), @recipients VARCHAR(4000), @subject VARCHAR(255), @importance VARCHAR(20) = 'Normal', @broj_upozorenja INT = 0
+		,@stimestamp VARCHAR(16), @sdatum2 VARCHAR(16), @sblocking_chains VARCHAR(10), @ssessions VARCHAR(20), @swaittime VARCHAR(20), @waittime INT = 0, @sinfo VARCHAR(255)
+		,@error_number INT, @error_message VARCHAR(500), @cfg_sinfo NVARCHAR(4000)
+
+	DECLARE @blocking_alert VARCHAR(128), @profile_name NVARCHAR(255)
+
+	DECLARE @copy_recipients VARCHAR(8000), @bcc_recipients NVARCHAR(4000) 
+-- Clarivate recipients
+	
+-- Get config params 
+
+	DECLARE @lb_status VARCHAR(255), @bb_status VARCHAR(255), @blk_status VARCHAR(255), @threshold_bold INT, @threshold_darkred INT, @threshold_total_wait_time_min_importance_high INT, @total_wait_time_min INT
+	DECLARE @lb_status_fcolor VARCHAR(255), @bb_status_fcolor VARCHAR(255), @blk_status_fcolor VARCHAR(255)
+	DECLARE @title_blocking_chains NVARCHAR(255), @title_sessions NVARCHAR(255), @title_wait_resources NVARCHAR(255), @title_active_transactions NVARCHAR(255), @title_sql_statements NVARCHAR(255)
+	DECLARE @tiny_blocked_wait_time_sec INT = 0
+		
+	DECLARE @ldb VARCHAR(255) = 'LEADING BLOCKER', @bb VARCHAR(255) = 'Blocking / Blocked', @blk VARCHAR(255) = 'Blocked'
+
+	DECLARE @metric_high VARCHAR(50), @mh_duration_ms BIGINT, @mh_cpu_ms BIGINT, @mh_lreads_p BIGINT, @mh_preads_p BIGINT, @mh_writes_p BIGINT, @mh_gmem_mb BIGINT, @mh_tlog_mb BIGINT, @mh_at_duration_sec BIGINT, @mh_at_tlog_used_mb BIGINT, @mh_at_tlog_reserved_mb BIGINT
+	
+	SELECT @recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 1),
+		@copy_recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 2),
+		@bcc_recipients = (SELECT value	FROM dbo.dc_config	WHERE config_id = 3),
+		@blocking_alert = COALESCE((SELECT value FROM dbo.dc_config	WHERE config_id = 4), 'Blocking Alert. '), 
+		@profile_name = (SELECT value	FROM dbo.dc_config	WHERE config_id = 5), 
+		@cfg_sinfo = (SELECT value	FROM dbo.dc_config	WHERE config_id = 6), 
+		@lb_status = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 7), @ldb),
+		@bb_status = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 8), @bb),
+		@blk_status = COALESCE((SELECT value FROM dbo.dc_config	WHERE config_id = 9), @blk),
+		@threshold_bold = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 10)), NULL), 
+		@threshold_darkred = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 11)), NULL),
+		@threshold_total_wait_time_min_importance_high = COALESCE(TRY_CONVERT(INT, (SELECT value FROM dbo.dc_config WHERE config_id = 12)), NULL),
+		@lb_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 13), 'Orange'),
+		@bb_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 14), 'DarkRed'),
+		@blk_status_fcolor = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 15), 'Red'),
+		@title_blocking_chains = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 16), 'Blocking Chains'),
+		@title_sessions = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 17), 'Sessions'),
+		@title_wait_resources = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 18), 'Wait Resources'),
+		@title_active_transactions = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 19), 'Active Transactions'),
+		@title_sql_statements = COALESCE((SELECT value FROM dbo.dc_config WHERE config_id = 20), 'SQL Statements'), 
+		@metric_high = COALESCE((SELECT value	FROM dbo.dc_config	WHERE config_id = 21), ''),
+		@mh_duration_ms = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 22)), NULL),
+		@mh_cpu_ms = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 23)), NULL),
+		@mh_lreads_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 24)), NULL),
+		@mh_preads_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 25)), NULL),
+		@mh_writes_p = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 26)), NULL),
+		@mh_gmem_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 27)), NULL),
+		@mh_tlog_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 28)), NULL), 
+		@mh_at_duration_sec = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 29)), NULL),
+		@mh_at_tlog_used_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 30)), NULL),
+		@mh_at_tlog_reserved_mb = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 31)), NULL),
+		@tiny_blocked_wait_time_sec = COALESCE(TRY_CONVERT(BIGINT, (SELECT value FROM dbo.dc_config WHERE config_id = 44)), @tiny_blocked_wait_time_sec)
+
+
+	-- Check if it's only intellisense 
+/*
+	IF NOT EXISTS(
+		SELECT *
+		FROM dbo.dc_rpt_active_sessions s
+			INNER JOIN dbo.dc_rpt_active_sessions_blocking_chains c ON c.SSID = s.SSID
+		WHERE NOT (
+			Application IN ('Management Studio - Transact-SQL IntelliSense', 'dbForge Search for SQL Server')
+				AND Level > 1 
+				AND c.[Blocking SSID] > 0
+				AND [Blocking SSID-s Count] = 0
+			)
+			AND Level > 1
+		)
+	BEGIN
+		-- while checking if everything is ok
+		SELECT @recipients = 'dusan.krstic@clarivate.com' 
+			,@copy_recipients = NULL
+			,@importance = 'Normal'
+			,@blocking_alert = 'Blocking Alert (IntelliSense). '
+		
+	END
+*/
+	DECLARE @timestamp DATETIME2(0)
+
+	SELECT @timestamp = MAX(timestamp)
+	FROM dbo.dc_rpt_active_sessions
+
+	-- Check wait_time_ms threshold
+	IF @wait_time_sec IS NOT NULL AND NOT EXISTS(SELECT * FROM dbo.dc_rpt_active_sessions_blocking_chains WHERE [Level] > 1 AND [Wait Time (ms)] >= (@wait_time_sec * 1000))
+	BEGIN 
+		RAISERROR(N'Some blocking chains were detected, wait times does not exceed wait time threshold of %d seconds.', 10, 10, @wait_time_sec) WITH NOWAIT
+		RETURN
+	END
+
+	DECLARE @iplive_db VARCHAR(255)
+
+	IF NOT EXISTS(SELECT * FROM sys.objects o WHERE type = 'U' AND name = 'dc_cfg_active_sessions_blocking_chains_ignore_list') 
+	BEGIN 
+		CREATE TABLE dbo.dc_cfg_active_sessions_blocking_chains_ignore_list (
+			id INT PRIMARY KEY
+			,object_type CHAR(1) NOT NULL -- P - program; L - Login; H - Host
+			,active BIT NOT NULL DEFAULT 1
+			,value VARCHAR(255) NOT NULL
+			,min_seconds INT DEFAULT 0
+		)
+		INSERT INTO dbo.dc_cfg_active_sessions_blocking_chains_ignore_list VALUES 
+		(1, 'P', 1, 'Microsoft SQL Server Management Studio - Transact-SQL IntelliSense%', 0)
+	END
+
+-- Blocking chains working table
+	IF OBJECT_ID('tempdb.dbo.#blocking_chains') IS NOT NULL
+		DROP TABLE #blocking_chains
+
+	SELECT ID = IDENTITY(INT, 1, 1), [Chain ID] , [Blocking Tree] + /*N' ' +*/ CONVERT(VARCHAR, Level) [Level], Level Level_Int, bc.SSID, CONVERT(DATETIME2(0), s.[Start Time]) [Start Time], s.Status, bc.[Blocking SSID], [Blocking SSID-s Count], [Blocking Path]
+		,[Blocking Status], bc.[Wait Time (ms)] / 1000 [Wait Time (sec)], [Blocking Start Time]
+		,s.[Wait Resource], [Wait Type], /*wr.Resource,*/ Application, Host, Login, COALESCE(LEFT(s.[SQL Statement], 128), '') [SQL Statement]
+		,COALESCE(s.[Request Database], s.[Session Database]) [Database],
+		/*,[Blocking Status 2] = CASE [Blocking Status] WHEN @lb_status THEN @lb_status_fcolor WHEN @bb_status THEN @bb_status_fcolor WHEN @blk_status THEN @blk_status_fcolor END,*/
+		 [Blocking SPID Status] = CASE WHEN bc.[Blocking SSID] > 0 THEN (SELECT TOP 1 s.[Blocking Status] FROM dbo.dc_rpt_active_sessions s WHERE s.SSID = bc.[Blocking SSID]) ELSE NULL END
+	INTO #blocking_chains
+	FROM dbo.dc_rpt_active_sessions_blocking_chains bc
+		INNER JOIN dbo.dc_rpt_active_sessions s ON bc.SSID = s.SSID AND (bc.RQID IS NULL OR bc.RQID = s.RQID)
+		LEFT JOIN dbo.dc_rpt_active_sessions_wait_resources wr ON wr.[Wait Resource] = s.[Wait Resource]
+	WHERE (bc.[Wait Time (ms)] IS NULL OR (@blocking_wait_time_sec IS NULL OR (s.[Wait Time (ms)] >= (@blocking_wait_time_sec * 1000))))
+		-- Check to see if program name is in the ignore list. 
+		AND NOT EXISTS(
+			SELECT * 
+			FROM dbo.dc_cfg_active_sessions_blocking_chains_ignore_list il 
+			WHERE il.active = 1 
+				AND il.object_type = 'P' 
+				AND s.Application LIKE value 
+				AND s.[Wait Time (ms)] / 1000 < COALESCE(min_seconds, 0)
+				AND NOT EXISTS( -- If an ignore list item is in blocking chain, we must include it in report. 
+						SELECT * 
+						FROM dbo.dc_rpt_active_sessions_blocking_chains bc2
+						WHERE bc2.[Blocking SSID] = bc.SSID 
+				)
+		)
+
+	ORDER BY bc.[Chain ID], bc.[Blocking Path] -- bc.Level, bc.[Wait Time (ms)] DESC -- bc.[Blocking Path]
+	
+-- Remove tiny leaf blocking victims (under 20 sec)
+
+	IF @tiny_blocked_wait_time_sec > 0
+	BEGIN
+		DELETE #blocking_chains
+		WHERE [Blocking Status] = 'Blocked'
+			AND [Wait Time (sec)] <= @tiny_blocked_wait_time_sec
+			AND ISNULL([Blocking SSID-s Count], 0) = 0
+		RAISERROR(N'Deleting tiny blocked SPID-s with wait time <= %d seconds', 10, 10, @tiny_blocked_wait_time_sec) WITH NOWAIT
+	END
+
+/*
+	SELECT * FROM #blocking_chains
+	select * FROM dbo.dc_rpt_active_sessions_blocking_chains bc
+	SELECT * FROM dbo.dc_rpt_active_sessions
+*/
+	--DECLARE @hours INT
+	
+	/* HEADER */
+
+	SELECT @stimestamp = CONVERT(VARCHAR, MAX(Timestamp), 121)
+		,@sblocking_chains = CONVERT(VARCHAR, COUNT(DISTINCT [Chain ID]))
+		,@swaittime = CONVERT(VARCHAR, SUM(CASE WHEN Level = 1 THEN 0 ELSE [Wait Time (ms)] END) / 1000)
+		,@waittime = SUM(CASE WHEN Level = 1 THEN 0 ELSE [Wait Time (ms)] END) / 1000
+	FROM dbo.dc_rpt_active_sessions_blocking_chains
+	
+	SET @total_wait_time_min = @waittime / 60
+
+	SELECT @swaittime = CONVERT(VARCHAR(10), @waittime / 60) + ' min. ' + CONVERT(VARCHAR, @waittime % 60) + ' sec.'
+
+	SELECT @ssessions = CONVERT(VARCHAR, (SELECT COUNT(DISTINCT [SSID]) FROM #blocking_chains))
+
+	SELECT @sinfo = REPLACE(REPLACE(REPLACE(@cfg_sinfo, '{0}', @sblocking_chains), '{1}', @ssessions), '{2}', @swaittime) --  N'Chains: {0}; SPID-s: {1}; Total Wait Time: {3}'
+
+	SELECT @subject = COALESCE(@blocking_alert, 'Blocking Alert. ') + COALESCE(@subject_prefix, '') +  @sinfo
+
+-- Wait Resources
+	DECLARE @wait_resources TABLE (ID INT, wait_resource NVARCHAR(256))
+	INSERT INTO @wait_resources (ID, wait_resource)
+	SELECT MIN(c.ID) ID, c.[Wait Resource]
+	FROM  dbo.dc_rpt_active_sessions_wait_resources w
+		INNER JOIN #blocking_chains c ON w.[Wait Resource] = c.[Wait Resource]
+	GROUP BY c.[Wait Resource]
+
+	CREATE TABLE #wait_resources (ID INT IDENTITY(1, 1), wait_resource NVARCHAR(256))
+	INSERT INTO #wait_resources (wait_resource)
+	SELECT wait_resource
+	FROM @wait_resources
+	ORDER BY ID
+
+	
+	SET @MAIL_BODY = N'
+		<html>
+		<head>
+			<style type="text/css">
+				table { margin: 5px; }
+				th { background-color: Gainsboro; }
+				caption {  background-color: WhiteSmoke; color: DarkRed; font-weight: bold; text-align: center; font-style: italic; font-size: 13;}
+			</style>
+		</head>
+		<body><H4>FIP - ' + @@SERVERNAME + N' - Blocking Report - ' + @stimestamp + '. ' + @sinfo + N'</H4>
+			<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_blocking_chains + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>Status</th>
+					<th>Blk SPID-s</th>
+					<th>Blocking Status</th>
+					<th>Blk Start Time</th>
+					<th>Wait Time</th>
+					<th>Wait Type</th>
+					<th>WRID</th>
+					<th>Database</th>
+					<th>Host</th>
+					<th>User</th>
+					<th>Program</th>
+				</tr>'
+ 
+	SELECT 
+		c.ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN [Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, [Blocking SSID]) END + '</td>' +
+
+					N'<td style="text-align:left;color:' + 
+						CASE Status 
+							WHEN 'Sleeping' THEN 'Gray' WHEN 'Running' THEN 'Green' WHEN 'Runnable' THEN 'Olive' WHEN 'Suspended' THEN 'DarkOrange' ELSE 'Black' END
+						+ ';">' + Status + '</td>' +
+
+
+					N'<td align="center">' + CASE WHEN [Blocking SSID-s Count] = 0 THEN '' ELSE CONVERT(VARCHAR, [Blocking SSID-s Count]) END + '</td>' +
+
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor
+						END + ';font-weight: bold;">' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status WHEN @bb THEN @bb_status WHEN @blk THEN @blk_status END + '</td>' +
+/*
+					N'<td style="text-align:right' + CASE WHEN ISNULL([Wait Time (sec)], 0) > 0 THEN ';background-color:' + CASE WHEN c.[Level_Int] = 1 THEN 'Beige' ELSE 'MistyRose' END ELSE '' END + '">' 
+						+ COALESCE(CONVERT(VARCHAR, [Wait Time (sec)]), '') + '</td>' +
+*/
+					N'<td align="center">' + dbo.fn_FormatDateTime([Blocking Start Time], 1, 0) + '</td>' +
+					N'<td style="text-align:center;' + 
+						CASE WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_bold THEN 'font-weight:bold;' ELSE '' END + 
+						CASE WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_darkred THEN 'color:Red;' WHEN [Wait Time (sec)] > 0 AND c.Level_Int > 1 AND [Wait Time (sec)] >= @threshold_bold THEN 'color:DarkRed;' ELSE '' END + 
+						CASE WHEN ISNULL([Wait Time (sec)], 0) > 0 THEN 'background-color:' + CASE WHEN c.[Level_Int] = 1 THEN 'Beige' ELSE 'MistyRose' END ELSE '' END + '">' + dbo.fn_FormatSeconds([Wait Time (sec)], NULL, 3) + '</td>' +
+					N'<td style="text-align:center;color:' + CASE WHEN [Wait Type] LIKE 'LCK%' THEN 'Red' ELSE 'Black' END + ';">' + COALESCE([Wait Type], '') + '</td>' +
+					N'<td align="center">' + COALESCE(CONVERT(VARCHAR, w.ID) /* s.[Wait Resource]*/, '') + '</td>' +
+					N'<td align="left">' + COALESCE([Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Host], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Login], '') + '</td>' +
+					N'<td align="left">' + COALESCE([Application], '') + '</td>' +
+--					N'<td align="left">' + [SQL Statement] + '</td>' +
+					N'</tr>'
+	INTO #TRED 
+	FROM   #blocking_chains c
+		LEFT JOIN #wait_resources w ON c.[Wait Resource] = w.wait_resource
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+	
+
+-- Sessions
+
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_sessions + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>RQID</th>
+					<th>Start Time</th>
+					<th>Duration</th>
+					<th>CPU Time</th>
+					<th>Lgcl Reads</th>
+					<th>Phcl Reads</th>
+					<th>Writes</th>
+					<th>Granted Mem</th>
+					<th>DOP</th>
+					<th>Tr.Log Used</th>
+					<th>Op.Trans</th>
+					<th>Isolation</th>
+					<th>ExecObj DB</th>
+					<th>Executing Object</th>
+					<th>ExecObj Type</th>
+					<th>Query Hash</th>
+
+				</tr>'
+
+	SELECT c.ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, s.[RQID]), '') + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatDateTime(s.[Start Time], 2, 0) + '</td>' +
+					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Duration (ms)] >= @mh_duration_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.[Duration (ms)], default, default) + '</td>' +					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[CPU (ms)] >= @mh_cpu_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.[CPU (ms)], default, default) + '</td>' +					
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Logical Reads] >= @mh_lreads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Logical Reads], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Physical Reads] >= @mh_preads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Physical Reads], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Writes] >= @mh_writes_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Writes], default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN s.[Granted Memory (MB)] >= @mh_gmem_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.[Granted Memory (MB)] * 128.,  default, default) + '</td>' +
+					N'<td style="text-align:center;">' + CONVERT(VARCHAR, s.DOP) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN ISNULL(s.[TLog Used (MB)], 0) + ISNULL(s.[TLog Reserved (MB)], 0) >= @mh_tlog_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages((s.[TLog Used (MB)] + s.[TLog Reserved (MB)]) * 128., default, default) + '</td>' +
+
+					N'<td align="right">' + dbo.fn_FormatInt(s.[Open Trans Count], default) + '</td>' +
+					N'<td align="center">' + CONVERT(VARCHAR, s.[Tran Isolation Level]) + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Object Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Object], '') +  '</td>' +
+					N'<td align="left">' + COALESCE(REPLACE(REPLACE(s.[Object Type], 'SQL_', ''), '_', ' '), '') + '</td>' +
+					N'<td align="left">' + COALESCE(CONVERT(VARCHAR, [Query Hash], 1), '') +  '</td>' +
+
+					N'</tr>'
+	INTO #TRED2 
+	FROM   dbo.dc_rpt_active_sessions s
+		INNER JOIN #blocking_chains c ON s.SSID = c.SSID
+	ORDER BY c.ID
+	
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED2 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+-- Query Hashes
+	SELECT [Query Hash], COUNT(*) [Sessions Cnt], COUNT(CASE WHEN s.[Blocking SSID] > 0 THEN 1 ELSE NULL END) [Blocked SPIDs Cnt], SUM(s.[Blocking SSID-s Count]) [Blocking SPIDs Cnt]
+	INTO #query_hashes
+	FROM dbo.dc_rpt_active_sessions s
+		INNER JOIN #blocking_chains bc ON s.SSID = bc.SSID
+	WHERE Timestamp = @timestamp
+	GROUP BY [Query Hash]
+	
+	IF @@ROWCOUNT > 0
+	BEGIN 
+		SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+
+		SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+					'<caption>Query Hashes Execution Stats</caption>
+					<tr>
+						<th>Query Hash</th>
+						<th>SPIDs Cnt</th>
+						<th>Cache Cnt</th>
+						<th>Plans Cnt</th>
+						<th>Blocked SPIDs Cnt</th>
+						<th>Blocking SPIDs Cnt</th>
+						<th>Executions</th>
+						<th>Duration</th>
+						<th>CPU Time</th>
+						<th>Logical Reads</th>
+						<th>Physical Reads</th>
+						<th>Writes</th>
+						<th>Granted Mem</th>
+						<th>Avg DOP</th>
+					</tr>'
+
+	--	select * from dbo.dc_rpt_active_sessions_query_hashes_exec_stats s
+
+		SELECT id = identity(int, 1, 1),
+			MAIL_BODY = 
+						N'<tr>' +
+						N'<td align="center">' + COALESCE(CONVERT(VARCHAR, [Query Hash], 1), '') +  '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatInt(h.[Sessions Cnt], default) + '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatInt(s.plan_cache_rows_count, default) + '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatInt(s.query_hash_plans_count, default) + '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatInt(h.[Blocked SPIDs Cnt], default) + '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatInt(h.[Blocking SPIDs Cnt], default) + '</td>' +
+						N'<td style="text-align:right;">' + dbo.fn_FormatInt(s.execution_count, default) + '</td>' +
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_elapsed_time / 1000 >= @mh_duration_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.total_elapsed_time / 1000, default, default) + '</td>' +					
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_worker_time / 1000 >= @mh_cpu_ms THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_CPUTime(s.total_worker_time / 1000, default, default) + '</td>' +					
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_logical_reads >= @mh_lreads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.total_logical_reads, default, default) + '</td>' +
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_physical_reads >= @mh_preads_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.total_physical_reads, default, default) + '</td>' +
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_logical_writes >= @mh_writes_p THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.total_logical_writes, default, default) + '</td>' +
+						N'<td style="text-align:right;background-color:' + CASE WHEN s.total_grant_kb / 1024 >= @mh_gmem_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(s.total_grant_kb / 8,  default, default) + '</td>' +
+						N'<td style="text-align:center;">' + dbo.fn_FormatNum(1. * s.total_dop / NULLIF(s.execution_count, 0), default) + '</td>' +
+						N'</tr>'
+		INTO #TREDQH2 
+		FROM   dbo.dc_rpt_active_sessions_query_hashes_exec_stats s
+			INNER JOIN #query_hashes h ON h.[Query Hash] = s.query_hash
+		WHERE timestamp = @timestamp
+		ORDER BY h.[Blocked SPIDs Cnt], h.[Blocking SPIDs Cnt] DESC, h.[Sessions Cnt] DESC
+	
+		SELECT
+			@MAIL_BODY += MAIL_BODY 
+		FROM #TREDQH2 
+		WHERE MAIL_BODY IS NOT NULL
+		ORDER BY ID
+
+	END
+-- Wait Resources
+
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+	--SELECT * FROM dbo.dc_rpt_active_sessions_wait_resources
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_wait_resources + '</caption>
+				<tr>
+					<th>WRID</th>
+					<th>Wait Resource</th>
+					<th>Type</th>
+					<th>Database</th>
+					<th>Object</th>
+					<th>Index ID</th>
+					<th>Index Name</th>
+					<th>Page Type</th>
+					<th>Page Type Description</th>
+				</tr>'
+
+	SELECT wr.ID
+		,MAIL_BODY = 
+					N'<tr>' +
+					N'<td align="center">' + COALESCE(CONVERT(VARCHAR, wr.ID), /* s.[Wait Resource]*/ '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Wait Resource], '') + '</td>' +
+					N'<td align="center">' + COALESCE(w.[Resource], '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Object], '') + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, w.[Index ID]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Index Name], '') + '</td>' +
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, w.[Page Type]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(w.[Page Type Desc], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED3 
+	FROM   dbo.dc_rpt_active_sessions_wait_resources w
+		INNER JOIN #wait_resources wr ON w.[Wait Resource] = wr.wait_resource
+		--INNER JOIN #blocking_chains c ON w.[Wait Resource] = c.[Wait Resource]
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED3 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+
+-- Active transactions
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+	--SELECT * FROM dbo.dc_rpt_active_transactions
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' +
+				'<caption>' + @title_active_transactions + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>Tran ID</th>
+					<th>Name</th>
+					<th>Database</th>
+					<th>Begin Time</th>
+					<th>Duration</th>
+					<th>Type</th>
+					<th>DTC UOW</th>
+					<th>State</th>
+					<th>Tr.Log Used</th>
+					<th>Tr.Log Reserved</th>
+					<th>Records Count</th>
+					<th>Isolation Level</th>
+				</tr>'
+
+	SELECT ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+/*
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + 
+					CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_short WHEN @bb THEN @bb_status_short WHEN @blk THEN @blk_status_short END + '</td>' +
+*/
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, t.[Tran ID]), '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran Name], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Database], '') + '</td>' +
+					N'<td align="left">' + CONVERT(VARCHAR(50), CONVERT(DATETIME2(0), t.[Tran Begin Time]), 121) + '</td>' +
+					
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Duration (sec)] >= @mh_at_duration_sec THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatSeconds(t.[Tran Duration (sec)], NULL, 3) + '</td>' +
+
+/*					N'<td align="center">' + dbo.fn_FormatSeconds(t.[Tran Duration (sec)], NULL, 3) + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Used] / 1024. / 8., default, default) + '</td>' +
+					N'<td align="right">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Reserved] / 1024. / 8., default, default) + '</td>' +
+
+*/					
+					N'<td align="center">' + COALESCE(t.[Tran Type], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran DTC UOW], '') + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran State], '') + '</td>' +
+
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Bytes Used] / 1024. / 1024. >= @mh_at_tlog_used_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Used] / 1024. / 8., default, default) + '</td>' +
+					N'<td style="text-align:right;background-color:' + CASE WHEN t.[Tran Bytes Reserved] / 1024. / 1024. >= @mh_at_tlog_reserved_mb THEN @metric_high ELSE '' END + ';">' + dbo.fn_FormatMetrics_Pages(t.[Tran Bytes Reserved] / 1024. / 8., default, default) + '</td>' +					
+
+					N'<td align="right">' + dbo.fn_FormatNum(t.[Tran Record Count], NULL) + '</td>' +
+					N'<td align="left">' + COALESCE(t.[Tran Isolation Level], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED4 
+	FROM   dbo.dc_rpt_active_transactions t
+		INNER JOIN #blocking_chains c ON t.SSID = c.SSID
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED4 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+	
+-- Full Query Text
+	SELECT @MAIL_BODY += N'</table><div style = "clear:both;"></div>'
+
+	SELECT @MAIL_BODY += '<table border="1" align="left" cellpadding="2" cellspacing="0" style="font-family:Segoe UI;font-size:11;text-align:center;">' + /*max-width: 1200px;*/
+				'<caption>' + @title_sql_statements + '</caption>
+				<tr>
+					<th>SPID</th>
+					<th>Chain</th>
+					<th>Blck Level</th>
+					<th>Blk SPID</th>
+					<th>RQID</th>
+					<th>Command</th>
+					<th>Database</th>
+					<th>SQL Statement</th>
+				</tr>'
+
+	SELECT ID,
+		MAIL_BODY = 
+					N'<tr>' +
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + CONVERT(VARCHAR, c.[SSID]) + '</td>' +
+/*
+					N'<td style="text-align:center;font-weight: bold;color:' + CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor END + ';">' + 
+					CASE c.[Blocking Status] WHEN @ldb THEN @lb_status_short WHEN @bb THEN @bb_status_short WHEN @blk THEN @blk_status_short END + '</td>' +
+*/
+					N'<td align="right">' + CONVERT(VARCHAR, [Chain ID]) + '</td>' +
+					N'<td align="left">' + [Level] + '</td>' +
+					N'<td style="text-align:center;color:' + 
+						CASE [Blocking SPID Status] 
+							WHEN @ldb THEN @lb_status_fcolor WHEN @bb THEN @bb_status_fcolor WHEN @blk THEN @blk_status_fcolor ELSE 'Black' 
+						END + ';font-weight: bold;">' + CASE WHEN c.[Blocking SSID] = 0 THEN '' ELSE CONVERT(VARCHAR, c.[Blocking SSID]) END + '</td>' +
+
+					N'<td align="right">' + COALESCE(CONVERT(VARCHAR, s.[RQID]), '') + '</td>' +
+					N'<td align="center">' + COALESCE(s.[Command], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[Request Database], s.[Session Database], '') + '</td>' +
+					N'<td align="left">' + COALESCE(s.[SQL Statement], '') + '</td>' +
+					N'</tr>'
+	INTO #TRED5 
+	FROM   dbo.dc_rpt_active_sessions s
+		INNER JOIN #blocking_chains c ON s.SSID = c.SSID
+	ORDER BY c.ID
+
+	SELECT
+		@MAIL_BODY += MAIL_BODY 
+	FROM #TRED5 
+	WHERE MAIL_BODY IS NOT NULL
+	ORDER BY ID
+
+	SELECT @MAIL_BODY += 
+			N'</table><div style = "clear:both;"></div>
+			</body></html>'
+
+	
+	IF @force_email_address IS NOT NULL 
+	BEGIN
+		SELECT @recipients = @force_email_address
+			,@copy_recipients = NULL, @bcc_recipients = NULL
+			,@importance = 'High'
+	END
+	ELSE 
+	BEGIN 
+		IF @total_wait_time_min >= @threshold_total_wait_time_min_importance_high
+			SET @importance = 'High'
+	END
+
+	EXEC msdb.dbo.sp_send_dbmail
+		@body = @mail_body,
+		@body_format ='HTML',
+		@recipients = @recipients, 
+		@copy_recipients = @copy_recipients,
+		@blind_copy_recipients = @bcc_recipients,
+		@importance = @importance,
+		@subject = @subject,
+		@profile_name = @profile_name
+
+	IF @error_number IS NOT NULL
+	BEGIN 
+		RAISERROR(N'Error in procedure dbo.dc_rpt_active_sessions_blocking_report. Number: %d. Message: %s.', 16, 1, @error_number, @error_message) WITH NOWAIT
+		RETURN 1
+	END
+	RETURN 0
+END
+GO
+
+
